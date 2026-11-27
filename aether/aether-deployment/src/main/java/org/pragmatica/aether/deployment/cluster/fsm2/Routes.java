@@ -187,6 +187,53 @@ public sealed interface Routes {
                                                                                                                RouteState.Published.published()))));
     }
 
+    // -- the goal gate ---------------------------------------------------------------------------------------------
+    /// The goal gate of #3389 A2 part 2: every declared row of `artifact` for the attempt its owner blueprint is committed at is in the mirror and
+    /// [#current]. An artifact with no owner in the mirror, an owner that declares no route for it, or a `registerOnly` owner has no rows to wait
+    /// for, so its goal is never held. A `Failed` row of an earlier attempt is not committed: the new attempt's DECLARE resets it first.
+    static boolean rowsCommitted(ClusterModel m, Artifact artifact) {
+        return Schemas.owner(m, artifact)
+                      .flatMap(id -> m.blueprints.get(id)
+                                                 .map(value -> allCurrent(m, id, value, artifact)))
+                      .or(true);
+    }
+
+    /// A witness on each declared row of `artifact` at the value the mirror holds, in declaration order: a row that changes or goes between the goal's
+    /// derivation and its commit refuses the goal transaction.
+    static List<KVCommand.ReadWitness<AetherKey>> rowWitnesses(ClusterModel m, Artifact artifact) {
+        return declaredKeys(m, artifact).stream()
+                           .map(key -> rowWitness(m, key))
+                           .toList();
+    }
+
+    private static List<DeclaredRouteKey> declaredKeys(ClusterModel m, Artifact artifact) {
+        return Schemas.owner(m, artifact)
+                      .flatMap(m.blueprints::get)
+                      .map(value -> declaredKeys(value, artifact))
+                      .or(List.of());
+    }
+
+    private static KVCommand.ReadWitness<AetherKey> rowWitness(ClusterModel m, DeclaredRouteKey key) {
+        return new KVCommand.ReadWitness<>(key,
+                                           m.declaredRoutes.get(key).map(row -> (Object) row));
+    }
+
+    private static boolean allCurrent(ClusterModel m, BlueprintId id, AppBlueprintValue value, Artifact artifact) {
+        return declaredKeys(value, artifact).stream()
+                           .allMatch(key -> m.declaredRoutes.get(key)
+                                                            .map(row -> current(row,
+                                                                                id,
+                                                                                value.attemptId()))
+                                                            .or(false));
+    }
+
+    private static List<DeclaredRouteKey> declaredKeys(AppBlueprintValue value, Artifact artifact) {
+        return value.registerOnly()
+               ? List.of()
+               : keysOf(Map.entry(artifact,
+                                  value.declaredRoutes().getOrDefault(artifact, List.of())));
+    }
+
     private static boolean current(DeclaredRouteValue row, BlueprintId id, String attemptId) {
         return owns(row, id) && (row.attemptId()
                                     .equals(attemptId) || !(row.state() instanceof RouteState.Failed));

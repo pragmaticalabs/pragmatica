@@ -4,10 +4,12 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
@@ -203,10 +205,13 @@ class RoutesTest {
         var h = active();
         var orphan = row("org.example:gone:1.0.0", "attempt-9", RouteState.Declared.declared());
 
+        // A committed row requests the reconcile (#3389), so the removal is drafted at once; it is held to show the row committed first.
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
         h.seed(key(LIST), orphan);
         h.drain();
         assertThat(committed(h, LIST)).isEqualTo(Option.some(orphan));
-        h.deliver(new ClusterInput.Reconcile());
+        assertThat(h.held.values().stream().filter(submit -> submit.kind() == SubmitKind.ROUTES)).as("the sweep drafted the removal").hasSize(1);
+        releaseHeld(h);
         assertThat(committed(h, LIST)).isEqualTo(Option.none());
     }
 
@@ -216,6 +221,8 @@ class RoutesTest {
         var h = active();
         var other = blueprintId("org.example:other:1.0.0");
 
+        // A committed row requests the reconcile (#3389), whose sweep would remove these ownerless rows: the removal is held in flight.
+        h.holdKinds = Set.of(SubmitKind.ROUTES);
         h.seed(key(LIST), declared("attempt-1"));
         h.drain();
         assertThat(h.model().declaredByOwner.get(APP_ID).map(artifacts -> artifacts.contains(ORDERS))).isEqualTo(Option.some(true));
@@ -224,5 +231,12 @@ class RoutesTest {
         h.drain();
         assertThat(h.model().declaredByOwner.get(APP_ID)).isEqualTo(Option.none());
         assertThat(h.model().declaredByOwner.get(other).map(artifacts -> artifacts.contains(ORDERS))).isEqualTo(Option.some(true));
+    }
+
+    private static void releaseHeld(FsmHarness h) {
+        new ArrayList<>(h.held.values()).forEach(submit -> {
+            h.applyHeld(submit.correlationId());
+            h.settleHeld(submit, new Settlement.Accepted());
+        });
     }
 }

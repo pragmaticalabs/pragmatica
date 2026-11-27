@@ -28,6 +28,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.Submitted;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -448,13 +449,31 @@ public sealed interface Outbox {
                : Option.some(TxDraft.draft(SubmitKind.GOALS,
                                            mutations.getFirst().key(),
                                            mutations)
-                                    .withGuards(live.stream()
-                                                    .map(entry -> observedGuard(entry.getKey(),
-                                                                                entry.getValue().guard()))
-                                                    .toList())
+                                    .withGuards(Stream.concat(live.stream()
+                                                                  .map(entry -> observedGuard(entry.getKey(),
+                                                                                              entry.getValue().guard())),
+                                                              rowGuards(m, live))
+                                                      .toList())
                                     .withPairs(live.stream().map(Map.Entry::getKey).collect(Collectors.toSet()))
                                     .withNode(node)
                                     .withOnAccepted(started(ctx, node, live)));
+    }
+
+    /// #3389: the witnesses on the declared rows of the artifact of each live LOADED or ACTIVE goal (a node holds one pair per artifact, so
+    /// no row repeats): the goal is refused if a row moved between the decision and the commit. An UNLOADED goal carries none.
+    private static Stream<KVCommand.ReadWitness<AetherKey>> rowGuards(ClusterModel m,
+                                                                      List<Map.Entry<SlicePair, GoalIntent>> live) {
+        return live.stream()
+                   .filter(Outbox::gated)
+                   .flatMap(entry -> Routes.rowWitnesses(m,
+                                                         entry.getKey().artifact())
+                                           .stream());
+    }
+
+    /// A goal that loads: LOADED or ACTIVE. An UNLOADED goal is never gated on the declared rows (it only removes).
+    private static boolean gated(Map.Entry<SlicePair, GoalIntent> entry) {
+        return entry.getValue()
+                    .goal() != SliceGoal.UNLOADED;
     }
 
     /// A fresh LOADED goal announces `DeploymentStarted` when its transaction is accepted, and so does any event its intent carries.
@@ -490,7 +509,17 @@ public sealed interface Outbox {
     private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
         return stillCurrent(m,
                             entry.getKey(),
-                            entry.getValue().guard()) && !promotesRetired(m, entry);
+                            entry.getValue().guard())
+               && !promotesRetired(m, entry)
+               && rowsCommitted(m, entry);
+    }
+
+    /// #3389: a goal that loads waits until every declared route row of its artifact is committed, so a slice never loads before its routes
+    /// are `Declared`; the transaction then witnesses the rows ([#rowGuards]). The commit of a row requests the reconcile that derives the
+    /// held goal again (`Judgments`).
+    private static boolean rowsCommitted(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        return ! gated(entry) || Routes.rowsCommitted(m,
+                                                      entry.getKey().artifact());
     }
 
     private static boolean promotesRetired(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
@@ -958,9 +987,8 @@ public sealed interface Outbox {
             }
 
             var pair = pairs.getFirst();
-            var guard = Option.from(draft.guards().stream().filter(g -> g.key()
-                                                                         .equals(pair.observedKey())).findFirst());
-            var pairMoved = pairMoved(m, mutation, guard);
+            var guards = pairGuards(draft, pair);
+            var pairMoved = pairMoved(m, mutation, guards);
             // FER: a pair past the resubmission bound is released and re-derived by the next reconcile (6.2); one that moved is re-derived by it.
             if (pairMoved || draft.attempt() >= limit) {
                 releaseUnwritten(m, pair);
@@ -970,21 +998,37 @@ public sealed interface Outbox {
 
             stay.add(mutation);
             stayPairs.add(pair);
-            guard.onPresent(stayGuards::add);
+            stayGuards.addAll(guards);
         }
 
         return new PairSplit(stay, stayGuards, stayPairs, shared, movedAny);
     }
 
+    /// The witnesses of `draft` that concern `pair`: its observed guard and, for a goal that loads, the declared rows of its artifact (#3389).
+    /// A pair resubmitted after a refusal keeps all of them, so a goal never commits without the row witnesses it was derived under.
+    private static List<KVCommand.ReadWitness<AetherKey>> pairGuards(TxDraft draft, SlicePair pair) {
+        return draft.guards()
+                    .stream()
+                    .filter(guard -> guard.key()
+                                          .equals(pair.observedKey()) || declaredRowOf(guard,
+                                                                                       pair.artifact()))
+                    .toList();
+    }
+
+    private static boolean declaredRowOf(KVCommand.ReadWitness<AetherKey> guard, Artifact artifact) {
+        return guard.key() instanceof DeclaredRouteKey row && row.artifact()
+                                                                 .equals(artifact);
+    }
+
     private static boolean pairMoved(ClusterModel m,
                                      KVCommand.Mutation<AetherKey, AetherValue> mutation,
-                                     Option<KVCommand.ReadWitness<AetherKey>> guard) {
+                                     List<KVCommand.ReadWitness<AetherKey>> guards) {
         return ! mutation.expected()
                          .equals(mirrored(m,
-                                          mutation.key())) || guard.map(g -> !g.expected()
-                                                                               .equals(mirrored(m,
-                                                                                                g.key()).map(v -> (Object) v)))
-                                                                   .or(false);
+                                          mutation.key())) || guards.stream()
+                                                                    .anyMatch(g -> !g.expected()
+                                                                                     .equals(mirrored(m,
+                                                                                                      g.key()).map(v -> (Object) v)));
     }
 
     /// R-4.3.3 refused: derived again from the mirror at once, at most [#GOAL_RESUBMISSIONS] times, then parked for the next reconcile (6.2:
