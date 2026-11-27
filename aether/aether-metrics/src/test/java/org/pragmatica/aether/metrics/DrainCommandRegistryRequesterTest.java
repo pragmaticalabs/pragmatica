@@ -24,6 +24,7 @@ class DrainCommandRegistryRequesterTest {
         var manager = registry.requestDrain(NODE, Requester.MANAGER).unwrap();
 
         assertThat(manager).isNotEqualTo(operator);
+        assertThat(registry.pinOf(NODE).unwrap().id()).as("pinOf names the operator's entry when both hold one").isEqualTo(operator);
         assertThat(registry.drainTargets()).as("one target, not one per entry").containsExactly(NODE);
     }
 

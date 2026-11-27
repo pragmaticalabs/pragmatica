@@ -86,9 +86,7 @@ class TopologyDrainsAttemptEndTest {
     }
 
     private DrainSink productionSink() {
-        return DrainSink.synchronous(drains::request,
-                                     _ -> {},
-                                     drains::release);
+        return drains.sink(_ -> {});
     }
 
     private void drainTheTarget() {

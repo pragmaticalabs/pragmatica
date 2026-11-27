@@ -6,7 +6,9 @@ package org.pragmatica.aether.node.assembly;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
+import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.metrics.DrainCommandRegistry;
 import org.pragmatica.aether.metrics.DrainId;
 import org.pragmatica.consensus.NodeId;
@@ -35,6 +37,13 @@ final class TopologyDrains {
 
     static TopologyDrains topologyDrains(DrainCommandRegistry registry) {
         return new TopologyDrains(registry);
+    }
+
+    /// The sink the topology manager requests its drains through: adds by [#request], tells the membership state machine through
+    /// `fsmCall`, and ends an attempt that leaves its command by [#release]. One place binds the three, so the wiring of the release
+    /// is the one the tests drive.
+    DrainSink sink(Consumer<NodeId> fsmCall) {
+        return DrainSink.synchronous(this::request, fsmCall, this::release);
     }
 
     /// Registers the drain of `target` and remembers its id.

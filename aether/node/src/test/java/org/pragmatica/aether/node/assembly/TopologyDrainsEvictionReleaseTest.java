@@ -16,7 +16,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.ActionResult;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
-import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeAction;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
@@ -115,7 +114,7 @@ class TopologyDrainsEvictionReleaseTest {
                                                              TopologyDrainsEvictionReleaseTest::clusterConfig,
                                                              _ -> Promise.success(List.of()),
                                                              () -> ClusterPhase.NORMAL,
-                                                             DrainSink.synchronous(drains::request, _ -> {}, drains::release),
+                                                             drains.sink(_ -> {}),
                                                              drains::clear,
                                                              Option::none,
                                                              liveness);
