@@ -147,13 +147,14 @@ public sealed interface Directory {
     }
 
     /// C13 on Remove: a node that is departed gets R-4.3.3: its departure record goes with its rows, in one transaction.
+    /// #3828: a removal of a live node's committed directive sticks for its process incarnation (`Joins.markRemoved`).
     static ClusterModel onDirectiveRemove(ClusterModel m, Ctx ctx, NodeId node) {
         Indexer.removeDirective(m, node);
         Absence.clear(m, node);
 
         return m.departed.contains(node)
                ? removeDeparted(m, ctx, node)
-               : Reconcile.request(m, ctx);
+               : Reconcile.request(Joins.markRemoved(m, node), ctx);
     }
 
     /// R-4.3.3: `Remove(NodeDepartureKey)` expecting the DEPARTED value, plus the observed rows at their exact values and any

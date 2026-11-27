@@ -196,6 +196,10 @@ public final class ClusterModel {
     PMap<Artifact, String> exclusionEndReasons = PMap.empty(scans);
     /// R-CF.17 parity (LEGACY `CommunityAdmissionLedger`): the refused WORKER assignment commits of each worker, in a row.
     PMap<NodeId, Integer> assignmentRefusals = PMap.empty(scans);
+    /// #3828: the nodes whose COMMITTED directive was removed, with the process incarnation the removal was observed under. No join writes the
+    /// directive back for that incarnation (`Joins.assign`); a join that is positive evidence of another process ends the mark. Leader-local:
+    /// a new leader's `Rebuild` starts empty, where a node without a directive is indistinguishable from one never directed.
+    PMap<NodeId, ProcessIncarnation> removedDirectives = PMap.empty(scans);
     /// R-CF.17 parity: workers reported `community-assignment-unplaced` and not yet placed.
     PSet<NodeId> unplacedWarned = PSet.empty(scans);
     /// Datasources whose FAILED record was committed while suspended: announced once on the resume (`Schemas.announceWithheld`).
@@ -327,6 +331,7 @@ public final class ClusterModel {
         c.strayWarned = strayWarned.rebound(meter);
         c.exclusionEndReasons = exclusionEndReasons.rebound(meter);
         c.assignmentRefusals = assignmentRefusals.rebound(meter);
+        c.removedDirectives = removedDirectives.rebound(meter);
         c.unplacedWarned = unplacedWarned.rebound(meter);
         c.withheldBlocked = withheldBlocked.rebound(meter);
         c.warningRows = warningRows.rebound(meter);

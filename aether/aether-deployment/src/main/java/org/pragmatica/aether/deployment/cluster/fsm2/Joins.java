@@ -60,6 +60,7 @@ public sealed interface Joins {
 
         m.admissions = m.admissions.put(node, admission);
         m.admittedAt = m.admittedAt.put(node, ctx.monoNs());
+        refreshRemoved(m, node);
         Absence.clear(m, node);
         Indexer.refreshDeparted(m, node);
         Indexer.refreshNodeRows(m, node);
@@ -116,6 +117,7 @@ public sealed interface Joins {
         m.admissions = m.admissions.put(node,
                                         known.withProcess(new ProcessIncarnation(known.process().bootIncarnation(),
                                                                                  token)));
+        refreshRemoved(m, node);
         Indexer.refreshDeparted(m, node);
         Indexer.refreshNodeRows(m, node);
         var turned = noteStale(m, ctx, node, before);
@@ -323,10 +325,54 @@ public sealed interface Joins {
                : trackIfQueued(assign(m, ctx, node, join), node, join);
     }
 
+    /// The one writer of a join's directive (J5). #3828: a directive that was committed and then removed in this process incarnation is not
+    /// derived again (a lost or refused one, never committed, still is: the B11 heal). The join writes nothing and queues nothing, so it is
+    /// not tracked.
     private static ClusterModel assign(ClusterModel m, Ctx ctx, NodeId node, PendingJoin join) {
+        if (removedStands(m, node)) {
+            return m;
+        }
+
         return join.worker()
                ? Directory.assignWorker(m, ctx, node)
                : Directory.assignCore(m, ctx, node);
+    }
+
+    /// The committed directive of `node` was removed, and no join has since been positive evidence of another process.
+    static boolean removedStands(ClusterModel m, NodeId node) {
+        return m.removedDirectives.containsKey(node);
+    }
+
+    /// The removal of `node`'s committed directive was observed: remember the incarnation it was observed under.
+    static ClusterModel markRemoved(ClusterModel m, NodeId node) {
+        m.removedDirectives = m.removedDirectives.put(node,
+                                                      m.admissions.get(node).or(Admission.UNKNOWN).process());
+
+        return m;
+    }
+
+    /// An admission update ends the mark on positive evidence of another process (C8: both tokens known and unequal). A mark taken while the
+    /// token was unknown adopts the token when it is learned: learning a token is not a new incarnation `[guess: the first token learned after
+    /// the removal belongs to the process whose directive was removed]`.
+    private static ClusterModel refreshRemoved(ClusterModel m, NodeId node) {
+        var current = m.admissions.get(node).or(Admission.UNKNOWN);
+
+        m.removedDirectives = m.removedDirectives.get(node)
+                                                 .fold(() -> m.removedDirectives,
+                                                       marked -> current.isDifferentProcessFrom(marked)
+                                                                 ? m.removedDirectives.remove(node)
+                                                                 : adopted(m.removedDirectives, node, marked, current));
+
+        return m;
+    }
+
+    private static PMap<NodeId, ProcessIncarnation> adopted(PMap<NodeId, ProcessIncarnation> marks,
+                                                            NodeId node,
+                                                            ProcessIncarnation marked,
+                                                            Admission current) {
+        return marked.bootToken() == 0L && current.tokenKnown()
+               ? marks.put(node, current.process())
+               : marks;
     }
 
     /// The join stays pending, and whatever unmatched episode it was in is over.
