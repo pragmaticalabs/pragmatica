@@ -230,6 +230,7 @@ class Fsm2RoutesTest {
                              Map.entry("CommunityKey", AetherKey.CommunityKey.communityKey("c1")),
                              Map.entry("GovernorAnnouncementKey", AetherKey.GovernorAnnouncementKey.forCommunity("c1")),
                              Map.entry("NodeDepartureKey", AetherKey.NodeDepartureKey.nodeDepartureKey(PEER)),
+                             Map.entry("DirectiveReceiptKey", AetherKey.DirectiveReceiptKey.directiveReceiptKey(PEER)),
                              Map.entry("ArtifactJudgmentKey", AetherKey.ArtifactJudgmentKey.artifactJudgmentKey(ORDERS)),
                              Map.entry("DeploymentApplyKey", AetherKey.DeploymentApplyKey.deploymentApplyKey(BLUEPRINT)),
                              Map.entry("DeploymentOutcomeKey", AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(BLUEPRINT)),
@@ -298,6 +299,23 @@ class Fsm2RoutesTest {
             rig.remove(new AetherKey.AlertThresholdKey("cpu"));
 
             assertThat(rig.cluster).isEmpty();
+            assertThat(rig.node).isEmpty();
+        }
+
+        /// #3828 lane 3a: the directive receipt reaches the cluster FSM on a put and on a remove, and not the node FSM. Red when: the family is
+        /// missing from the cluster routes, so the leader's mirror of it is never told.
+        @Test
+        void aDirectiveReceipt_isDeliveredToTheClusterFsm_onPutAndOnRemove() {
+            var rig = new Rig();
+            var key = AetherKey.DirectiveReceiptKey.directiveReceiptKey(PEER);
+            var value = AetherValue.DirectiveReceiptValue.directiveReceiptValue("WORKER");
+
+            rig.putLeader(new LeaderValue(SELF, 1L));
+            rig.cluster.clear();
+            rig.leaderPut(key, value);
+            rig.leaderRemove(key);
+
+            assertThat(rig.cluster).extracting(Delivered::input).containsExactly(new ClusterInput.KvPut(key, value), new ClusterInput.KvRemove(key));
             assertThat(rig.node).isEmpty();
         }
 

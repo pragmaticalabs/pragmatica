@@ -23,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
@@ -147,6 +148,9 @@ public final class ClusterModel {
     PMap<String, Long> announcementSeenAt = PMap.empty(scans);
     PMap<NodeId, Admission> admissions = PMap.empty(scans);
     PMap<NodeId, NodeDepartureValue> records = PMap.empty(scans);
+    /// #3828 (design 3.3): the committed directive receipts by node id, a cache of the KV that `Rebuild`, the notifications and a refusal fill. Nothing in
+    /// the model decides from it yet.
+    PMap<NodeId, DirectiveReceiptValue> receipts = PMap.empty(scans);
     /// R-2.11: ids this leader observed joining **after** its `Rebuild` (a join input, C11f, or core liveness). Empty at `Rebuild`: the
     /// seed never supersedes a committed DEPARTED (D-4 (ii)).
     PSet<NodeId> joined = PSet.empty(scans);
@@ -303,6 +307,7 @@ public final class ClusterModel {
         c.announcementSeenAt = announcementSeenAt.rebound(meter);
         c.admissions = admissions.rebound(meter);
         c.records = records.rebound(meter);
+        c.receipts = receipts.rebound(meter);
         c.joined = joined.rebound(meter);
         c.inherited = inherited.rebound(meter);
         c.livenessSince = livenessSince.rebound(meter);
