@@ -15,6 +15,7 @@
  */package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -44,6 +45,7 @@ import org.pragmatica.serialization.SliceCodec;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicChannel;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -122,7 +124,7 @@ class QuicLaneFinishUnderLossTest {
         if (!finMarkers().containsAll(acked)) {
             var at = finMarkers().size();
             var statsAt = stats();
-            LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(15));
+            Pause.pause(Duration.ofSeconds(15));
             fail("LOST delivered@20s=" + at + " delivered@35s=" + finMarkers().size() + " succeeded=" + acked.size()
                  + " failed=" + failed.get() + " missing=" + missing(acked) + " closes=" + closes
                  + " dialerStandIn.active=" + standIn.isActive() + " acceptorStandIn.active=" + acceptorStandIn.isActive()

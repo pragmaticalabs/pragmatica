@@ -16,6 +16,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.time.Duration;
 import org.pragmatica.net.tcp.TlsConfig;
 import java.net.SocketAddress;
 import java.util.ArrayList;
@@ -59,6 +60,7 @@ import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -1054,7 +1056,7 @@ class QuicConsensusBackpressureTest {
     }
 
     private static void parkBriefly() {
-        java.util.concurrent.locks.LockSupport.parkNanos(TimeSpan.timeSpan(10).millis().nanos());
+        Pause.pause(Duration.ofMillis(10));
     }
 
     private QuicClusterNetwork network(NodeId... extraTopology) {
