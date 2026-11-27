@@ -84,10 +84,43 @@
             <version>3.27.3</version>
             <scope>test</scope>
         </dependency>
+        <!-- The port-bind gate (#3801): this pom has no root parent, so it carries the gate's binding itself. -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>port-bind-gate</artifactId>
+            <version>${platform.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
+            <!-- The port-bind gate (#3801), the same binding as the root pom's port-bind-gate profile: it fails this module on a
+                 socket-bind or port-allocation call in a test class outside HeldPort and the gate's allow-list. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>port-bind-scan</id>
+                        <phase>process-test-classes</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <skip>${maven.test.skip}</skip>
+                            <target>
+                                <java classname="org.pragmatica.portbind.PortBindScan" classpathref="maven.test.classpath" fork="true" failonerror="true">
+                                    <arg value="${project.artifactId}"/>
+                                    <arg value="${project.build.testOutputDirectory}"/>
+                                    <arg value="enforce"/>
+                                </java>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>

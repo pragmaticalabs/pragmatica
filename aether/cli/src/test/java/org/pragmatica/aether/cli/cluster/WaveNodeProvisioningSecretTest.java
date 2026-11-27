@@ -17,6 +17,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,7 +64,7 @@ class WaveNodeProvisioningSecretTest {
         @BeforeEach
         @SuppressWarnings("JBCT-EX-01")
         void setUp() throws Exception {
-            fakeCluster = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            fakeCluster = HeldPort.httpServer();
             fakeCluster.createContext("/", exchange -> {
                 clusterRequests.incrementAndGet();
 

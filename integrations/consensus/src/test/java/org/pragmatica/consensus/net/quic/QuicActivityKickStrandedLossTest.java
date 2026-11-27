@@ -47,6 +47,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicheStall;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -271,8 +272,8 @@ class QuicActivityKickStrandedLossTest {
         DelayRelay(int targetPort, long delayMs) {
             this.delayMs = delayMs;
             try {
-                front = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-                upstream = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+                front = HeldPort.udp(InetAddress.getLoopbackAddress());
+                upstream = HeldPort.udp(InetAddress.getLoopbackAddress());
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }

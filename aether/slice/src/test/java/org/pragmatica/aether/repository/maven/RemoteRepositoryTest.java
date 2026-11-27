@@ -20,6 +20,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -90,7 +91,7 @@ class RemoteRepositoryTest {
     }
 
     private static Cause locateAgainstStatus(int status) throws IOException {
-        var server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        var server = HeldPort.httpServer(InetAddress.getLoopbackAddress());
         server.createContext("/", exchange -> {
             exchange.sendResponseHeaders(status, -1);
             exchange.close();

@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -82,7 +83,7 @@ class UnreachableClusterExitTest {
     private String scripted(int status, String body) throws IOException {
         var bytes = body.getBytes(StandardCharsets.UTF_8);
 
-        scripted = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        scripted = HeldPort.httpServer();
         scripted.createContext("/",
                                exchange -> {
                                    exchange.getResponseHeaders()

@@ -39,6 +39,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -59,7 +60,7 @@ class QuicClusterStartFailureThreadsTest {
         var before = eventLoopThreads();
         var network = network();
 
-        try (var holder = new DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             assertThat(network.startOnPort(holder.getLocalPort()).await(AWAIT).isFailure()).as("control: a start on a held UDP port fails").isTrue();
         }
 

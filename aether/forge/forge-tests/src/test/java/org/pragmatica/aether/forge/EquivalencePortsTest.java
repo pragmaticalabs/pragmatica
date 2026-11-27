@@ -9,6 +9,8 @@ import java.net.DatagramSocket;
 import java.net.ServerSocket;
 import java.util.function.IntPredicate;
 
+import org.pragmatica.portbind.HeldPort;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,7 +29,7 @@ class EquivalencePortsTest {
         for (var attempt = 0; attempt < 200; attempt++) {
             int start;
 
-            try (var probe = new ServerSocket(0)) {
+            try (var probe = HeldPort.tcp()) {
                 start = probe.getLocalPort();
             }
 
@@ -113,7 +115,7 @@ class EquivalencePortsTest {
     /// Mutation: the exhausted case returning the last block instead of throwing; goes red (an ERROR, never a PASS on a taken block).
     @Test
     void noFreeBlock_throwsNamingThePort() throws IOException {
-        try (var held = new ServerSocket(0)) {
+        try (var held = HeldPort.tcp()) {
             var port = held.getLocalPort();
 
             assertThatThrownBy(() -> EquivalencePorts.freeBase(port,

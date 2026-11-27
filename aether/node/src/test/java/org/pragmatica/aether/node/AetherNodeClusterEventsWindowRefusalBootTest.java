@@ -19,6 +19,7 @@ import org.pragmatica.config.ConfigService;
 import org.pragmatica.aether.resource.ResourceProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.portbind.HeldPort;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -89,7 +90,7 @@ class AetherNodeClusterEventsWindowRefusalBootTest {
     /// always answered "free" would make the assertion above vacuous.
     @Test
     void portProbe_seesAHeldPortAsTaken() throws IOException {
-        try (var held = new DatagramSocket(0)) { // port0-held: the positive-control socket stays open while the probe reads its port
+        try (var held = HeldPort.udp()) {
             assertThat(isFree(held.getLocalPort())).isFalse();
         }
     }

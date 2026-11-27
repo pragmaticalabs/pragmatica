@@ -49,6 +49,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -224,7 +225,7 @@ class QuicClusterNetworkLifecycleTest {
         var network = network();
         var built = observeBuilt(network);
 
-        try (var holder = new java.net.DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             assertThat(network.startOnPort(holder.getLocalPort()).await(AWAIT).isFailure()).as("control: a start on a held port fails").isTrue();
         }
 
@@ -240,7 +241,7 @@ class QuicClusterNetworkLifecycleTest {
         var network = network();
         var built = observeBuilt(network);
 
-        try (var holder = new java.net.DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             network.startOnPort(holder.getLocalPort()).await(AWAIT);
         }
         network.startOnPort(0).await(AWAIT).onFailure(cause -> fail("retry failed: " + cause.message()));

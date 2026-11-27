@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import org.pragmatica.portbind.HeldPort;
 
 /// A loopback endpoint that is a transport failure by construction (#3558): it accepts every connection and closes
 /// it at once without reading or answering, so a client always gets an I/O failure and never an answer. Whether the
@@ -19,7 +20,7 @@ final class DeadEndpoint implements AutoCloseable {
     }
 
     static DeadEndpoint start() throws IOException {
-        var endpoint = new DeadEndpoint(new ServerSocket(0, 50, InetAddress.getLoopbackAddress()));
+        var endpoint = new DeadEndpoint(HeldPort.tcp(50, InetAddress.getLoopbackAddress()));
 
         endpoint.acceptor.start();
         return endpoint;

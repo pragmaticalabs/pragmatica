@@ -45,6 +45,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamType;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -303,8 +304,8 @@ class QuicLaneEndMarkerFinLossTest {
 
         Relay(int targetPort) {
             try {
-                front = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-                upstream = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+                front = HeldPort.udp(InetAddress.getLoopbackAddress());
+                upstream = HeldPort.udp(InetAddress.getLoopbackAddress());
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }

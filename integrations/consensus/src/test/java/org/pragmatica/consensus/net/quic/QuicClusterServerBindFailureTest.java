@@ -39,6 +39,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -59,7 +60,7 @@ class QuicClusterServerBindFailureTest {
     /// after (the release then has not even begun at the report); drop the seam call (the control below goes red).
     @Test
     void failedBindOnOccupiedPort_releasesTheOwnedGroup_beforeReportingTheFailure() throws Exception {
-        try (var holder = new DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             var port = holder.getLocalPort();
             var server = serverOn(port, Option.empty());
             var terminatedAtReport = new AtomicReference<Boolean>();
@@ -102,7 +103,7 @@ class QuicClusterServerBindFailureTest {
     void failedBindOnOccupiedPort_neverReleasesASuppliedGroup() throws Exception {
         var shared = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
 
-        try (var holder = new DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             var port = holder.getLocalPort();
             var server = serverOn(port, Option.some(shared));
 
@@ -116,7 +117,7 @@ class QuicClusterServerBindFailureTest {
     /// stop() after the failed start (the owner's close path) stays a success: the release is idempotent.
     @Test
     void stopAfterFailedBind_succeeds() throws Exception {
-        try (var holder = new DatagramSocket(0)) {
+        try (var holder = HeldPort.udp()) {
             var port = holder.getLocalPort();
             var server = serverOn(port, Option.empty());
 

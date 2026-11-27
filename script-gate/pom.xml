@@ -88,6 +88,15 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
         </dependency>
+        <!-- PortBindGateBuildTest runs the root pom's own antrun <target> for the port-bind gate (#3801) through Ant's API, so the
+             exit-to-build-failure path (the java task's failonerror) is exercised, not read. Version = what maven-antrun-plugin
+             ${maven-antrun-plugin.version} resolves. -->
+        <dependency>
+            <groupId>org.apache.ant</groupId>
+            <artifactId>ant</artifactId>
+            <version>1.10.12</version>
+            <scope>test</scope>
+        </dependency>
         <!-- SourceWalk: the repository scans prune build output instead of walking it (#3703). -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

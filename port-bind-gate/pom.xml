@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc5</version>
+    </parent>
+
+    <artifactId>port-bind-gate</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Port Bind Gate</name>
+    <description>
+        The build-time enforcer for test port binding (#3801) and the one helper tests bind ports through (HeldPort).
+        A bytecode scan over every module's compiled test classes fails the build on a call site of a socket bind or
+        port-allocation API outside the helper, whatever its argument.
+    </description>
+
+    <!--
+        WHY THIS MODULE EXISTS AS ITS OWN MODULE WITH NO DEPENDENCIES AND NO src/test (#3801).
+
+        Same shape as test-plan-witness, for the same two reasons: every module with src/test pulls it in at test scope
+        through the root pom's port-bind-gate profile (so HeldPort is on every test classpath and the scan runs over that
+        module's own test classes, with nothing to enumerate and no reactor order to get wrong), so (a) a dependency on
+        anything in this repository could be a reactor cycle, and (b) a src/test of its own would make the profile give it a
+        dependency on itself. The scan reads class files with java.lang.classfile, which ships with the JDK; its pins
+        (fixtures compiled from source, every API of the set, the allow-list rules, HeldPort's contract) live in script-gate.
+    -->
+
+    <properties>
+        <!-- Build-instrument module: never published. -->
+        <gpg.skip>true</gpg.skip>
+    </properties>
+</project>

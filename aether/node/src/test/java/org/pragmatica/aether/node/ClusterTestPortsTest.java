@@ -515,14 +515,14 @@ class ClusterTestPortsTest {
     /// Positive controls: each probe must read a port this test holds as taken, or "free" is vacuous.
     @Test
     void probe_seesHeldClusterUdp() throws IOException {
-        try (var held = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) { // port0-held: the positive-control socket stays open while the probe reads its port
+        try (var held = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
             assertThat(ClusterTestPorts.isFreeClusterPort(held.getLocalPort())).isFalse();
         }
     }
 
     @Test
     void probe_seesHeldClusterTcp() throws IOException {
-        try (var held = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) { // port0-held: the positive-control socket stays open while the probe reads its port
+        try (var held = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
             assertThat(ClusterTestPorts.isFreeClusterPort(held.getLocalPort())).isFalse();
         }
     }

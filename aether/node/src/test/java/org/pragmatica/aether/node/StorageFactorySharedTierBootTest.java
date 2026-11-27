@@ -24,6 +24,7 @@ import org.pragmatica.aether.config.StorageConfig;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -108,7 +109,7 @@ class StorageFactorySharedTierBootTest {
     /// boot. Mutation that reddens it: skip the probe in `S3SharedTier#admit` -- construction then succeeds.
     @Test
     void createAll_endpointRefusingWrites_failsOnTheProbe() throws IOException {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
         server.createContext("/", StorageFactorySharedTierBootTest::readOnlyBucket);
         server.start();
         try {
@@ -162,7 +163,7 @@ class StorageFactorySharedTierBootTest {
     @Test
     void createAll_endpointAnsweringARedirect_failsWithoutFollowingIt() throws IOException {
         var target = FakeBucket.start(Duration.ZERO);
-        var redirecting = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var redirecting = HeldPort.httpServer();
         redirecting.createContext("/", exchange -> redirectTo(exchange, target.endpoint()));
         redirecting.start();
         try {
@@ -213,7 +214,7 @@ class StorageFactorySharedTierBootTest {
     /// keys, DELETE removes. Every answer waits `delay` first. Signatures are not checked.
     private record FakeBucket(HttpServer server, Map<String, byte[]> objects, AtomicInteger counter, Duration delay) {
         static FakeBucket start(Duration delay) throws IOException {
-            var bucket = new FakeBucket(HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0),
+            var bucket = new FakeBucket(HeldPort.httpServer(),
                                         new ConcurrentHashMap<>(),
                                         new AtomicInteger(),
                                         delay);

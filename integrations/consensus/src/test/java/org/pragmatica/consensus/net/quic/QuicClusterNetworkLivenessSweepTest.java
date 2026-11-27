@@ -54,6 +54,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -336,7 +337,7 @@ class QuicClusterNetworkLivenessSweepTest {
         var router = MessageRouter.mutable();
         router.addRoute(NetworkServiceMessage.ConnectionFailed.class, failures::add);
         var network = createNetwork(new NodeId("aaa-dialer"), TimeSpan.timeSpan(100).millis(), router);
-        try (var blackhole = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+        try (var blackhole = HeldPort.udp(InetAddress.getLoopbackAddress())) {
             var peerId = new NodeId("zzz-silent");
             var address = NodeAddress.nodeAddress("127.0.0.1", blackhole.getLocalPort())
                                      .fold(_ -> fail("bad address"), a -> a);

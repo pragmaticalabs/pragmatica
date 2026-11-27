@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,7 +59,7 @@ class ApplyCommitViewTest {
     @BeforeEach
     @SuppressWarnings("JBCT-EX-01")
     void fakeCluster() throws Exception {
-        cluster = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        cluster = HeldPort.httpServer();
         cluster.createContext("/", exchange -> {
             var body = ("{\"tomlContent\": \"" + storedToml.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n") + "\", \"configVersion\": 1}").getBytes(StandardCharsets.UTF_8);
 
