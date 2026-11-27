@@ -27,10 +27,11 @@ import org.pragmatica.lang.Option;
 
 
 /// The leader-side writers of the declared-route table that follow the committed blueprint (#3389 A2): DECLARE (W1), the re-drive of a lost
-/// DECLARE (W1b) and REMOVE of a removed blueprint's rows (W4). PUBLISH and FAIL are other writers.
+/// DECLARE (W1b), REMOVE of a removed blueprint's rows (W4) and PUBLISH (W2). FAIL is another writer.
 ///
-/// One mechanism for all three: [#reconcile] diffs the rows the blueprint's declared routes name against the committed rows the blueprint owns
-/// and drafts the difference as one `ROUTES` transaction. A republish after a rollback (W5) and a restored backup (W6) are the same event, a
+/// One mechanism for the four: [#reconcile] diffs the rows the blueprint's declared routes name against the committed rows the blueprint owns
+/// and drafts the difference as one `ROUTES` transaction. PUBLISH is part of that difference: a `Declared` row of an artifact some node
+/// publishes routes for becomes `Published`. A republish after a rollback (W5) and a restored backup (W6) are the same event, a
 /// committed blueprint put or remove, so they have no writer of their own.
 ///
 /// Every draft carries a witness on the owner blueprint's row, so a draft that lands after the blueprint's remove or republish is refused by the
@@ -47,6 +48,20 @@ public sealed interface Routes {
         return inFlight(m, id)
                ? m
                : submit(m, id, difference(m, id));
+    }
+
+    // -- W2: PUBLISH -------------------------------------------------------------------------------------------
+    /// The event hook of PUBLISH: a node's routes for `artifact` are committed. When the artifact has declared rows the reconcile derives the
+    /// flip at once; the sweep derives it again if the draft is refused or lost, and after a leader change.
+    static ClusterModel onNodeRoutes(ClusterModel m, Ctx ctx, Artifact artifact) {
+        return m.declaredByArtifact.containsKey(artifact)
+               ? Reconcile.request(m, ctx)
+               : m;
+    }
+
+    /// The row at its own owner and attemptId in `state`.
+    private static AetherValue restated(DeclaredRouteValue row, RouteState state) {
+        return DeclaredRouteValue.declaredRouteValue(row.blueprintId(), row.attemptId(), state);
     }
 
     // -- W1b: the re-drive ------------------------------------------------------------------------------------------
@@ -115,7 +130,8 @@ public sealed interface Routes {
     }
 
     /// A row is written for a declared route when none is committed, another blueprint owns it, or it is `Failed` for an earlier attempt of
-    /// this blueprint. A `Declared` or `Published` row of an earlier attempt stays: its state still holds.
+    /// this blueprint. A `Declared` or `Published` row of an earlier attempt stays: its state still holds, and a `Declared` one is published
+    /// when a node publishes routes for its artifact.
     private static Option<KVCommand.Mutation<AetherKey, AetherValue>> declare(ClusterModel m,
                                                                               BlueprintId id,
                                                                               String attemptId,
@@ -124,10 +140,25 @@ public sealed interface Routes {
 
         return committed.map(row -> current(row, id, attemptId))
                         .or(false)
-               ? Option.none()
+               ? publish(m, key)
                : Option.some(new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                             committed.map(row -> (AetherValue) row),
                                                                             Option.some(declared(id, attemptId))));
+    }
+
+    /// W2: the committed `Declared` row of a key whose artifact some node publishes routes for becomes `Published` at its own attemptId. The
+    /// evidence is the artifact's routes in the mirror (the entry carries no attemptId and its route spelling differs, so there is no
+    /// route-level match); the artifact carries its version, so an earlier version's routes never publish this one. The mutation expects the
+    /// committed `Declared` row and the draft carries the owner witness, so a flip derived for an earlier attempt is refused. A `Failed` row
+    /// is never flipped.
+    private static Option<KVCommand.Mutation<AetherKey, AetherValue>> publish(ClusterModel m, DeclaredRouteKey key) {
+        return m.declaredRoutes.get(key)
+                               .filter(row -> row.state() instanceof RouteState.Declared)
+                               .filter(_ -> m.routesByArtifact.containsKey(key.artifact()))
+                               .map(row -> new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                          Option.some((AetherValue) row),
+                                                                                          Option.some(restated(row,
+                                                                                                               RouteState.Published.published()))));
     }
 
     private static boolean current(DeclaredRouteValue row, BlueprintId id, String attemptId) {

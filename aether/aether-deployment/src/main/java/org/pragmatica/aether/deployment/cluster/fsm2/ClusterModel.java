@@ -128,6 +128,8 @@ public final class ClusterModel {
     PMap<NodeId, ActivationDirectiveValue> directives = PMap.empty(scans);
     PMap<SlicePair, NodeRoutesValue> routes = PMap.empty(scans);
     PMap<NodeId, PSet<Artifact>> routesByNode = PMap.empty(scans);
+    /// #3389: the nodes that publish routes for each artifact: the evidence of the `Declared` -> `Published` flip (`Routes`).
+    PMap<Artifact, PSet<NodeId>> routesByArtifact = PMap.empty(scans);
     /// #3389: the committed declared-route rows by their own key, the keys of each artifact, and the artifacts each blueprint owns rows
     /// for. Written only by the leader (`Routes`); the mirror of the rows is the `expected` of every route mutation and guard.
     PMap<DeclaredRouteKey, DeclaredRouteValue> declaredRoutes = PMap.empty(scans);
@@ -295,6 +297,7 @@ public final class ClusterModel {
         c.directives = directives.rebound(meter);
         c.routes = routes.rebound(meter);
         c.routesByNode = routesByNode.rebound(meter);
+        c.routesByArtifact = routesByArtifact.rebound(meter);
         c.declaredRoutes = declaredRoutes.rebound(meter);
         c.declaredByArtifact = declaredByArtifact.rebound(meter);
         c.declaredByOwner = declaredByOwner.rebound(meter);

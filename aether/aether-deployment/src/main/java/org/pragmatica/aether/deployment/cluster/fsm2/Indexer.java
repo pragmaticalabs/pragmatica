@@ -607,6 +607,7 @@ public sealed interface Indexer {
     static ClusterModel indexRoutes(ClusterModel m, SlicePair pair, NodeRoutesValue value) {
         m.routes = m.routes.put(pair, value);
         m.routesByNode = Idx.add(m.routesByNode, pair.node(), pair.artifact());
+        m.routesByArtifact = Idx.add(m.routesByArtifact, pair.artifact(), pair.node());
 
         return m;
     }
@@ -614,6 +615,7 @@ public sealed interface Indexer {
     static ClusterModel removeRoutes(ClusterModel m, SlicePair pair) {
         m.routes = m.routes.remove(pair);
         m.routesByNode = Idx.remove(m.routesByNode, pair.node(), pair.artifact());
+        m.routesByArtifact = Idx.remove(m.routesByArtifact, pair.artifact(), pair.node());
 
         return m;
     }
