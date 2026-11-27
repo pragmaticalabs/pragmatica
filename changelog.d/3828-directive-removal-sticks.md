@@ -6,5 +6,7 @@
   draft of the removed directive is dropped instead of resubmitted. A lost or refused directive that was never committed is still derived
   again (the B11 heal). The mark ends on positive evidence of another process (both tokens known and unequal); a token learned after the
   removal is adopted, not read as a new process.
+- **Not the model's own retirement.** C17b's removal of a departed worker's directive (with its record, one transaction) leaves no mark: a process
+  that joins under the retired id is a new admission, directed by J5 (#3028).
 - **Limits.** The mark is leader-local: a new leader's `Rebuild` starts without it, and a live worker without a directive is then
   indistinguishable from one never directed. The write carries no KV witness of the removal (a removal leaves no trace to witness).
