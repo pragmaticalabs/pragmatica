@@ -89,7 +89,8 @@ class RoutesPublishFailTest {
 
     /// Red when: the flip's `expected` is not the committed Declared row, or the sweep flips from lingering evidence: a flip derived for an
     /// earlier attemptId lands on a row that has since been reset for a later attempt. The Put's evidence is gone (the node unloaded) and the row
-    /// belongs to attempt-2 when the held flip is applied: it must be refused, and no later pass may flip the row.
+    /// belongs to attempt-2, as does its owner blueprint (a row of a later attempt than its owner speaks for nobody), when the held flip is
+    /// applied: it must be refused, and no later pass may flip the row.
     @Test
     void publish_aFlipDerivedForAStaleAttemptDoesNotFlipTheRow() {
         var h = declaredApp();
@@ -101,6 +102,7 @@ class RoutesPublishFailTest {
 
         assertThat(flips).as("the Put drafts the flip").hasSize(1);
         h.seedRemove(new NodeRoutesKey(CORE_1, ORDERS));
+        h.seed(new AppBlueprintKey(APP_ID), blueprintOf(ATTEMPT_2, LIST, GET_ONE));
         h.seed(key(LIST), declared(ATTEMPT_2));
         h.drain();
         var settlement = h.applyHeld(flips.getFirst().correlationId());
