@@ -150,6 +150,17 @@ class DirectiveRemovedStaysRemovedTest {
         assertThat(w.present(KEY)).as("a different known token is a new incarnation").isTrue();
     }
 
+    // Red when: `onProcessKnown` does not adopt the learned token into the mark (the join input that follows would adopt it instead).
+    @Test
+    void directiveRemovedWhileTokenUnknown_processKnownAdoptsTheTokenBeforeAnyJoin() {
+        var w = directedThenRemoved(0L);
+
+        w.h.deliver(new ClusterInput.ProcessKnown(WORKER, 21L));
+        redrive(w, 22L);
+
+        assertThat(w.present(KEY)).as("22 differs from the adopted 21: a new incarnation").isTrue();
+    }
+
     // Red when: the removal is not remembered per node: another worker's removal must not block this worker.
     @Test
     void directiveRemovedOfAnotherWorker_doesNotBlockThisWorker() {
