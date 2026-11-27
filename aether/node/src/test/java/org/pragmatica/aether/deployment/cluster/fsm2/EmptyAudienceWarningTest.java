@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Set;
 
+import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.CommunityState;
@@ -91,7 +92,8 @@ class EmptyAudienceWarningTest {
         assertThat(hosts(w.h, ORDERS).getFirst()).isIn(W1, W2, W3);
     }
 
-    /// Red when: a cluster with three workers (the default floor) raises the event at any pass.
+    /// Red when: a cluster whose community is ACTIVE with three workers (the default floor) raises the event at any pass. The first pass of a
+    /// FORMING community that reaches the floor in the same tick opens and closes the event (Placement runs before Communities in Reconcile).
     @Test
     void threeWorkers_fromTheStart_raiseNothing() {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
