@@ -3,7 +3,6 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.terra.http;
 
-import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -777,9 +776,10 @@ class TerraHttpServerTest {
     }
 
     private static int freePort() throws Exception {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+        var probe = HttpServer.httpServer(HttpServerConfig.httpServerConfig("free-port", 0), (_, _) -> {}).await(timeSpan(5).seconds()).unwrap();
+        var port = probe.port();
+        probe.stop().await(timeSpan(10).seconds()).unwrap();
+        return port;
     }
 
     private static HttpResponse<String> getOn(HttpClient client, int port, String path) throws Exception {
