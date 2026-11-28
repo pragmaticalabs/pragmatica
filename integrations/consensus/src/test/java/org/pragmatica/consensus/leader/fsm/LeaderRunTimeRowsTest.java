@@ -290,6 +290,56 @@ class LeaderRunTimeRowsTest {
         }
     }
 
+    /// K31 (#3846 INV-E): the verdict ends ITS OWN episode, by identity, and no other. During the verdict's dispatch the
+    /// episode of `PEER_A` is cancelled by `Led.onExit`, and the entry hook of `ReElecting` reads the KV record: that read
+    /// (the harness's KV supplier, on the drainer, inside the dispatch) opens a NEWER episode, for `PEER_B`. The verdict's
+    /// closing `endEpisode` must leave it standing: a repeated suspicion of `PEER_B` is then a no-op (no round 3), where an
+    /// `endEpisode` that ends whatever episode is live would let it open one.
+    @Test
+    void k31_verdictEndsOnlyItsOwnEpisode_aSuspicionOpenedDuringItsDispatchSurvives() {
+        var sends = new CopyOnWriteArrayList<Send>();
+        var hook = new AtomicReference<Runnable>(() -> {});
+        var h = harness(() -> true, () -> readKvThroughHook(hook), LONG, routerCapturing(sends));
+
+        try {
+            OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(PEER_A, ALL, seq()));
+            OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+            LeaderCommits.commitLeaderOnDrainer(h, PEER_A, 1L);
+            var ctx = h.state().ctx();
+
+            ctx.enablePreVote(LONG);
+            var preVote = ctx.preVote().unwrap();
+            var fired = new AtomicBoolean(false);
+
+            assertThat(ctx.removeFromView(PEER_A)).as("instrument: the leader left the stored view").isTrue();
+            hook.set(() -> suspectPeerBOnce(preVote, fired));
+            roundWithDoubtingMajorityOnDrainer(ctx, preVote);
+            assertThat(h.state()).as("instrument: the verdict was honoured, Led left for ReElecting")
+                      .isInstanceOf(LeaderElectionState.ReElecting.class);
+            assertThat(fired.get()).as("instrument: the entry hook's KV read opened the newer episode inside the dispatch")
+                      .isTrue();
+            assertThat(requestRounds(sends)).as("instrument: the newer episode asked in round 2")
+                      .contains(2L);
+            OnDrainer.run(ctx, () -> preVote.suspect(PEER_B));
+            assertThat(requestRounds(sends)).as("K31: the newer episode survived the verdict's end, so no round 3 opens")
+                      .doesNotContain(3L);
+        } finally {
+            shutdown(h);
+        }
+    }
+
+    private static Option<LeaderCommitted> readKvThroughHook(AtomicReference<Runnable> hook) {
+        hook.get().run();
+
+        return none();
+    }
+
+    private static void suspectPeerBOnce(LeaderPreVote preVote, AtomicBoolean fired) {
+        if (fired.compareAndSet(false, true)) {
+            preVote.suspect(PEER_B);
+        }
+    }
+
     /// One serial task: the installed or forged pre-vote suspects `PEER_A` (round 1, the node counts itself as doubting)
     /// and `PEER_B` answers that it doubts too, a majority of three, so the verdict is dispatched on the drainer.
     private static void roundWithDoubtingMajorityOnDrainer(LeaderElectionContext ctx, LeaderPreVote preVote) {
