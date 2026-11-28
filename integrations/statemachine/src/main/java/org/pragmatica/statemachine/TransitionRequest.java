@@ -6,32 +6,50 @@
  */
 package org.pragmatica.statemachine;
 
+import java.util.Queue;
+
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 
 /// Per-dispatch transition-request handle passed to [`FsmState#handle`]. Captures the FSM, the
-/// `from` state reference (the state the dispatcher observed when it called `handle`), and the
-/// triggering event. State code calls one of the `transitionTo*` methods to request a transition;
+/// state the dispatcher observed when it called `handle` together with the lifetime of that entry, the dispatch's
+/// frame, and the triggering event. State code calls one of the `transitionTo*` methods to request a transition;
 /// the CAS, the `onExit` / transition action / `onEntry` sequence, and the observer callback all
 /// run inside the library.
 ///
-/// Instances are single-use — each dispatch builds a fresh one.
+/// Instances are single-use — each dispatch builds a fresh one — and confined to that dispatch: every method checks
+/// first that the calling thread is inside the dispatch that built the instance, and throws
+/// [IllegalStateException] (after one ERROR line and a count, see [`Fsm#requireFrame`]) otherwise.
 public final class TransitionRequest<S extends FsmState<S, E>, E> {
     private final Fsm<S, E> fsm;
-    private final S fromState;
+    private final Fsm.Entered<S> entered;
+    private final Queue<E> frame;
     private final E event;
 
-    TransitionRequest(Fsm<S, E> fsm, S fromState, E event) {
+    TransitionRequest(Fsm<S, E> fsm, Fsm.Entered<S> entered, Queue<E> frame, E event) {
         this.fsm = fsm;
-        this.fromState = fromState;
+        this.entered = entered;
+        this.frame = frame;
         this.event = event;
     }
 
     public S fromState() {
-        return fromState;
+        fsm.requireFrame(frame);
+
+        return entered.state();
+    }
+
+    /// The lifetime of the entry into [#fromState()] that this dispatch observed: it ends when a successor's CAS wins.
+    public OwnerLifetime lifetime() {
+        fsm.requireFrame(frame);
+
+        return entered.lifetime();
     }
 
     public E event() {
+        fsm.requireFrame(frame);
+
         return event;
     }
 
@@ -50,7 +68,8 @@ public final class TransitionRequest<S extends FsmState<S, E>, E> {
     /// CAS-loss behaviour is identical to [`#transitionTo(FsmState)`].
     @Contract
     public void transitionTo(S target, Runnable transitionAction) {
-        if (!fsm.tryAdvance(fromState, target, transitionAction)) {
+        fsm.requireFrame(frame);
+        if (!fsm.tryAdvance(entered.state(), target, transitionAction)) {
             fsm.dispatch(event);
         }
     }
@@ -65,7 +84,8 @@ public final class TransitionRequest<S extends FsmState<S, E>, E> {
 
     @Contract
     public void transitionToOrDrop(S target, Runnable transitionAction) {
-        fsm.tryAdvance(fromState, target, transitionAction);
+        fsm.requireFrame(frame);
+        fsm.tryAdvance(entered.state(), target, transitionAction);
     }
 
     /// Explicitly mark the event as ignored by this state. Records through the observer; no
@@ -73,7 +93,8 @@ public final class TransitionRequest<S extends FsmState<S, E>, E> {
     /// default fall-through) when you want them visible in metrics.
     @Contract
     public void ignore() {
-        fsm.recordIgnored(fromState, event);
+        fsm.requireFrame(frame);
+        fsm.recordIgnored(entered.state(), event);
     }
 
     /// Handle the event via a side effect without changing state. Distinct from `ignore` —
@@ -83,8 +104,9 @@ public final class TransitionRequest<S extends FsmState<S, E>, E> {
     /// The action MUST NOT dispatch events (reentrancy) and MUST NOT throw (JBCT).
     @Contract
     public void handle(Runnable action) {
+        fsm.requireFrame(frame);
         action.run();
-        fsm.recordHandled(fromState, event);
+        fsm.recordHandled(entered.state(), event);
     }
 
     private static final Runnable NO_ACTION = () -> {};

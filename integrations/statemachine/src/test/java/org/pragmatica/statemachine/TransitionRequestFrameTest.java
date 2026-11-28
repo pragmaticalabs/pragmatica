@@ -6,29 +6,32 @@
  */
 package org.pragmatica.statemachine;
 
+import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.lang.utils.OwnerLifetime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
-/// #3846 K20: a [TransitionRequest] is built for one dispatch frame, yet nothing stops a handler from keeping it and a
-/// foreign thread from calling it after the frame is gone. Each row states what happens TODAY: the ENABLED tripwire
-/// asserts today's behaviour and names its lane in the failure message; the `@Disabled` twin asserts the rule (the
-/// call throws and the state is unchanged). The rule's ERROR line and `frameBreaches` count are lane S's: neither
-/// exists at this head, so lane S adds them to the twin's assertions.
-@Timeout(value = 30, unit = TimeUnit.SECONDS)
+/// #3846 K20: a [TransitionRequest] is built for one dispatch frame, and a handler may keep it. The rule (lane S): every
+/// method of it checks, at entry and before any effect, that the calling thread is inside the dispatch that built it;
+/// a call from a foreign thread or after the dispatch returned logs one ERROR line, counts in `frameBreaches` and
+/// throws [IllegalStateException], and the state is unchanged. The control keeps the rule from being "always throw".
+/// The ERROR line itself is not asserted: statemachine tests carry no log binding, so the count is its observable
+/// twin (both are written in the same method, `Fsm#frameBreach`).
 class TransitionRequestFrameTest {
-    enum Ev { KEEP, GO }
+    enum Ev { KEEP, GO, USE }
 
     /// A toy FSM with two states. `kept` is the request the idle state's handler keeps on `KEEP` (it ignores the event,
     /// so the state stays); `GO` moves idle to active inside its own frame.
     static final class Toy {
         final AtomicReference<TransitionRequest<St, Ev>> kept = new AtomicReference<>();
+        final AtomicReference<Throwable> thrownInLaterFrame = new AtomicReference<>();
         final St idle = new St(this, "IDLE");
         final St active = new St(this, "ACTIVE");
         final Fsm<St, Ev> fsm = Fsm.fsm("toy", idle);
@@ -40,7 +43,13 @@ class TransitionRequestFrameTest {
             switch (event) {
                 case KEEP -> keepAndIgnore(tx);
                 case GO -> tx.transitionTo(toy.active);
+                case USE -> useKeptRequest();
             }
+        }
+
+        /// A handler of a LATER dispatch (its own frame) calls the request kept from an earlier one.
+        private void useKeptRequest() {
+            toy.thrownInLaterFrame.set(catchThrowable(() -> toy.kept.get().transitionTo(toy.active)));
         }
 
         private void keepAndIgnore(TransitionRequest<St, Ev> tx) {
@@ -65,31 +74,101 @@ class TransitionRequestFrameTest {
         assertThat(toy.fsm.current()).isSameAs(toy.active);
     }
 
-    /// ENABLED tripwire (flipped in lane S): a request kept from an earlier frame and called from a foreign thread acts:
-    /// nothing throws and the state moves.
-    @Test
-    void k20_keptRequestCalledFromAForeignThread_atHead_movesTheState() {
-        var toy = keptByIdle();
-
-        var thrown = onForeignThread(() -> toy.kept.get().transitionTo(toy.active));
-
-        assertThat(thrown).as("K20 no longer acts: lane S landed the frame check. Enable "
-                              + "k20_keptRequestCalledFromAForeignThread_underInvE_throwsAndTheStateIsUnchanged "
-                              + "and delete this method")
-                          .isNull();
-        assertThat(toy.fsm.current()).as("K20 no longer acts: the state did not move").isSameAs(toy.active);
-    }
-
-    /// The rule, `@Disabled` until lane S: the call from outside the frame throws and the state is unchanged.
-    @Disabled("lane S: enable when TransitionRequest methods check their dispatch frame (K20)")
+    /// The rule: the call from a foreign thread throws, is counted once, and the state is unchanged (K20).
     @Test
     void k20_keptRequestCalledFromAForeignThread_underInvE_throwsAndTheStateIsUnchanged() {
         var toy = keptByIdle();
 
         var thrown = onForeignThread(() -> toy.kept.get().transitionTo(toy.active));
 
-        assertThat(thrown).as("the call from outside the frame throws").isNotNull();
+        assertThat(thrown).as("the call from outside the frame throws").isInstanceOf(IllegalStateException.class);
         assertThat(toy.fsm.current()).as("the state is unchanged").isSameAs(toy.idle);
+        assertThat(toy.fsm.frameBreachesForTest()).as("the breach is counted once").isEqualTo(1);
+    }
+
+    /// The same thread, after the dispatch returned, is outside the frame too: confinement is to the dispatch, not to the thread.
+    @Test
+    void keptRequestCalledOnTheDispatchingThreadAfterTheDispatchReturned_throwsAndTheStateIsUnchanged() {
+        var toy = keptByIdle();
+
+        var thrown = catchThrowable(() -> toy.kept.get().transitionTo(toy.active));
+
+        assertThat(thrown).isInstanceOf(IllegalStateException.class);
+        assertThat(toy.fsm.current()).isSameAs(toy.idle);
+        assertThat(toy.fsm.frameBreachesForTest()).isEqualTo(1);
+    }
+
+    /// A request kept from one dispatch and called inside a LATER dispatch on the same thread belongs to a frame that is
+    /// not the current one: refused. (A check that only asked "is any frame open" would let this through.)
+    @Test
+    void keptRequestCalledInsideALaterDispatch_throwsAndTheStateIsUnchanged() {
+        var toy = keptByIdle();
+
+        toy.fsm.dispatch(Ev.USE);
+
+        assertThat(toy.thrownInLaterFrame.get()).isInstanceOf(IllegalStateException.class);
+        assertThat(toy.fsm.current()).isSameAs(toy.idle);
+        assertThat(toy.fsm.frameBreachesForTest()).isEqualTo(1);
+    }
+
+    /// Every public method refuses before any effect: each of the seven is called once from outside the frame; seven
+    /// breaches, no `handle` action run, no transition, no observer record.
+    @Test
+    void everyPublicMethod_outsideTheFrame_isRefusedBeforeAnyEffect() {
+        var toy = keptByIdle();
+        var tx = toy.kept.get();
+        var actionRan = new AtomicBoolean(false);
+        var calls = List.<Runnable>of(() -> tx.transitionTo(toy.active),
+                                      () -> tx.transitionTo(toy.active, () -> actionRan.set(true)),
+                                      () -> tx.transitionToOrDrop(toy.active),
+                                      () -> tx.ignore(),
+                                      () -> tx.handle(() -> actionRan.set(true)),
+                                      () -> tx.lifetime(),
+                                      () -> tx.fromState());
+
+        calls.forEach(call -> assertThat(catchThrowable(call::run)).isInstanceOf(IllegalStateException.class));
+        assertThat(catchThrowable(tx::event)).isInstanceOf(IllegalStateException.class);
+
+        assertThat(toy.fsm.frameBreachesForTest()).as("eight calls, eight breaches").isEqualTo(8);
+        assertThat(actionRan).as("no action ran").isFalse();
+        assertThat(toy.fsm.current()).as("no transition").isSameAs(toy.idle);
+    }
+
+    /// A nested dispatch restores the enclosing frame: the handler's request is valid after the nested dispatch returned,
+    /// and in-frame `lifetime()` is the lifetime of the entry the dispatch observed.
+    @Test
+    void requestUsedAfterANestedDispatchReturned_stillActsAndKeepsTheObservedLifetime() {
+        var probe = new Probe();
+        var fsm = Fsm.<Probe, Ev>fsm("probe", probe);
+
+        probe.fsm = fsm;
+        fsm.dispatch(Ev.GO);
+
+        assertThat(probe.afterNested).as("the outer request acted after the nested dispatch").isTrue();
+        assertThat(probe.lifetime).as("lifetime of the observed entry").isSameAs(fsm.entered().lifetime());
+        assertThat(fsm.frameBreachesForTest()).isZero();
+    }
+
+    /// `GO` dispatches `KEEP` to itself from inside its handler, then uses its own request.
+    static final class Probe implements FsmState<Probe, Ev> {
+        Fsm<Probe, Ev> fsm;
+        boolean afterNested;
+        OwnerLifetime lifetime;
+
+        @Override
+        public void handle(Ev event, TransitionRequest<Probe, Ev> tx) {
+            switch (event) {
+                case KEEP, USE -> tx.ignore();
+                case GO -> nestThenUse(tx);
+            }
+        }
+
+        private void nestThenUse(TransitionRequest<Probe, Ev> tx) {
+            fsm.dispatch(Ev.KEEP);
+            lifetime = tx.lifetime();
+            tx.ignore();
+            afterNested = true;
+        }
     }
 
     /// An FSM in `IDLE` whose handler has kept the request of a `KEEP` dispatch that has returned.
