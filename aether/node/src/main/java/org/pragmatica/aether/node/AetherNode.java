@@ -150,6 +150,7 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.consumer.StreamLives;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -3074,7 +3075,8 @@ public interface AetherNode extends ManageableNode {
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
-                                                                                         epochSources.leaderEpoch());
+                                                                                         epochSources.leaderEpoch(),
+                                                                                         StreamLives.committedIn(kvStore));
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
         // Hoisted before collectRouteEntries (Wave 9 Fix A): the PASSIVE→process-exit-drain bridge
         // routes through this detector's windowed path, so the route-collection needs the ref
@@ -5181,7 +5183,11 @@ public interface AetherNode extends ManageableNode {
 
         dynamicConfigManager.onPresent(dcm -> dcm.onApplied(DEPLOYMENT_CONFIG_LISTENER, configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
+        // #3041, F5: a record that arrives with a life other than the committed one is an orphan; the leader reclaims it.
+        kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupCoordinator::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
+        // #3041: a committed stream delete ends the stream's life; the leader's coordinator reclaims the records of it.
+        kvRouterBuilder.onRemove(AetherKey.StreamConfigKey.class, consumerGroupCoordinator::onStreamConfigRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,

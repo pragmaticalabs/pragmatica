@@ -6,12 +6,14 @@ package org.pragmatica.aether.node;
 
 import java.io.IOException;
 
+import org.pragmatica.portbind.HeldPort;
+
 /// #2731 fixture: a second JVM that allocates ports and then sits in the window between allocation and a node's bind
 /// (it never binds them), until its stdin closes or it is killed.
 ///
 /// `new <n>`: `n` cluster ports through [ClusterTestPorts]. `legacy`: one port the pre-#2731 way, a port-0 probe from [HeldPort]
-/// that is released at once, which is the red control. The gate that bans a released probe (`FlakeScan` `PICK_THEN_REBIND`) checks
-/// where a port-0 socket is built, not when it is closed, so it does not see this close: the control exists to be pick-then-close.
+/// that is released at once, which is the red control. The port-bind gate (#3801) checks where a socket is built (here, only in
+/// `HeldPort`), not when it is closed, so it does not see this close: the control exists to be pick-then-close.
 /// Prints `PORT <p>` per port, then `READY`.
 public final class PortHolderMain {
     private PortHolderMain() {}

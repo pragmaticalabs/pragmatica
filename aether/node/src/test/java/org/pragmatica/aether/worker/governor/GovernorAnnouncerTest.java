@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.governor;
 
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -19,6 +20,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -239,7 +241,7 @@ class GovernorAnnouncerTest {
         }
 
         private void resolveAfterDelay(Option<GovernorAnnouncementValue> granted) {
-            java.util.concurrent.locks.LockSupport.parkNanos(2_000_000L);
+            Pause.pause(Duration.ofMillis(2));
             reply.succeed(new GovernorAuthorityMessage.Response(CORE, "pool-a", sent.getFirst().requestId(), granted));
         }
 

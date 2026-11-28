@@ -15,7 +15,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.Function;
 
 import io.netty.buffer.ByteBuf;
@@ -41,6 +40,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.testing.PollUntil.pollUntil;
@@ -500,13 +500,7 @@ class CapacityFenceTest {
         terminable();
         lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store, this::apply, leading::get, () -> 5,
             SourceProfile.DEFAULT_REPLACEMENT_CEILING, epoch::get).withApplyTimeout(TimeSpan.timeSpan(20).millis());
-        afterWitness = () -> {
-            var until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(150);
-
-            while (System.nanoTime() < until) {
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(5));
-            }
-        };
+        afterWitness = () -> Pause.pause(Duration.ofMillis(150));
 
         var outcome = terminate();
 

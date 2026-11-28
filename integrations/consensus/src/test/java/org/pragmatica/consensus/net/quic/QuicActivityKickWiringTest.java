@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -45,6 +46,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
 
 import io.netty.handler.codec.quic.QuicheStall;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -123,7 +125,7 @@ class QuicActivityKickWiringTest {
         relay = new QuicActivityKickStrandedLossTest.DelayRelay(boundPort(highNet), ONE_WAY_DELAY_MS);
         lowNet.dialForTests(infoOf(high, relay.port()), false);
         awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(4 * ONE_WAY_DELAY_MS));   // nothing in flight
+        Pause.pause(Duration.ofMillis(4 * ONE_WAY_DELAY_MS));   // nothing in flight
 
         var connection = lowNet.activeConnectionForTests(high).unwrap();
 
@@ -172,12 +174,12 @@ class QuicActivityKickWiringTest {
 
         lowNet.dialForTests(infoOf(high, boundPort(highNet)), false);
         awaitTrue(() -> connected(lowNet, high) && connected(highNet, low), "both ends CONNECTED");
-        LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(7));   // past any window opened while connecting
+        Pause.pause(Duration.ofSeconds(7));   // past any window opened while connecting
 
         var connection = lowNet.activeConnectionForTests(high).unwrap();
         var before = connection.activityKicksSent();
 
-        LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(4));
+        Pause.pause(Duration.ofSeconds(4));
 
         assertThat(connection.activityKicksSent() - before).as("kick frames over 4 s of idle link").isZero();
         assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())

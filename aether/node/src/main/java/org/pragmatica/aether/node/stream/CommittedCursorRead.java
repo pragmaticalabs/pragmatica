@@ -166,8 +166,9 @@ public interface CommittedCursorRead {
     /// the applier's rewind fence does not cover. A stale FOUND newer than the consumer's epoch is harmless to the
     /// position: the restart abandons the consumer without a flush, the new one re-fetches its cursor through the
     /// authoritative read, and the pass skips it while that fetch is pending ([StreamConsumerManager]'s `rewoundBehind`).
-    /// Its cost is at most one restart per pass, and none once a read for the key sent after the change has answered. A
-    /// core node acts on its own committed state at once, through its put notification.
+    /// Its cost is one restart per answered epoch (#3835: the manager remembers the epoch it restarted for, so a pass that
+    /// still holds the same stale answer restarts nothing), and none once a read for the key sent after the change has
+    /// answered. A core node acts on its own committed state at once, through its put notification.
     static CommittedEpochSource lastReadEpochs(Batch reads) {
         /// A key the latest pass holds: the pass that first held it in its current run, and what the reads answered.
         record Held(long since, Option<RewindEpoch> found) {

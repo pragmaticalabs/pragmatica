@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.node.SlotPasses;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -505,6 +506,36 @@ class WorkerCursorResumeTest {
             assertThat(afterAbsent.apply(SECOND)).isEqualTo(Option.none());
         }
 
+        /// #3847: a pass fixes its lookup when it starts and wins the slot afterwards. An answer that lands in between frees
+        /// the slot for that pass without being in its lookup, so the pass that sent read N acts on answers up to N-2 only.
+        /// The helper must return a lookup that reflects the answer that freed the slot. The pass is forced into that order
+        /// (lookup fixed while the slot is busy, answer lands, slot won) instead of left to the asynchronous settle.
+        @Test
+        void passUntilSent_winningPassFixedItsLookupBeforeTheAnswerLanded_stillReturnsALookupThatSeesTheAnswer() {
+            source.forPass(List.of(FIRST));
+
+            var lookup = passUntilSent(fixesLookupBeforeAnswerLands(() -> replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))))),
+                                       List.of(FIRST),
+                                       2);
+
+            assertThat(lookup.apply(FIRST)).describedAs("the lookup of the pass that sent read 2 reflects answer 1")
+                                           .isEqualTo(Option.some(REWOUND));
+        }
+
+        /// #3847, the production side of the same claim: a lookup is fixed when its pass starts, so an answer that lands
+        /// afterwards is seen by later passes only, even one that wins the slot that answer freed.
+        @Test
+        void lookup_isFixedWhenItsPassStarts_anAnswerLandingAfterwardsIsSeenByLaterPassesOnly() {
+            source.forPass(List.of(FIRST));
+            var early = source.forPass(List.of(FIRST));
+
+            replies.getFirst().succeed(List.of(Option.some(rewound(REWOUND))));
+            passUntilSent(List.of(FIRST), 2);
+
+            assertThat(early.apply(FIRST)).describedAs("the slot was busy when the pass started").isEqualTo(Option.none());
+            assertThat(source.forPass(List.of(FIRST)).apply(FIRST)).describedAs("a pass that starts after the answer landed").isEqualTo(Option.some(REWOUND));
+        }
+
         /// Only the latest pass's keys are kept, and an answer counts only for a key held since its read was sent: a
         /// subscription that left and came back never acts on a read from before it left.
         @Test
@@ -574,8 +605,9 @@ class WorkerCursorResumeTest {
             return reply;
         }
 
-        /// Runs passes until the `count`-th read is sent. The slot frees only after the previous answer has landed, so the
-        /// lookup of the pass that sent it reflects that answer.
+        /// Runs passes until the `count`-th read is sent, then returns the lookup of one more pass: the one that starts after
+        /// every answer that freed the slot has landed. The contract and why the sending pass's own lookup is not returned
+        /// are at [SlotPasses].
         private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(List<StreamConsumerManager.SubscriptionKey> keys,
                                                                                                                                 int count) {
             return passUntilSent(source, keys, count);
@@ -584,23 +616,33 @@ class WorkerCursorResumeTest {
         private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> passUntilSent(StreamConsumerManager.CommittedEpochSource epochs,
                                                                                                                                 List<StreamConsumerManager.SubscriptionKey> keys,
                                                                                                                                 int count) {
-            var lookup = new AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>>();
-
-            PollUntil.pollUntil(() -> passAndCount(epochs, keys, lookup), sent -> sent >= count, AWAIT_DEADLINE)
-                     .assertMet(count + " reads sent");
-
-            return lookup.get();
+            return SlotPasses.passUntilSent(() -> epochs.forPass(keys), applies::size, count, AWAIT_DEADLINE);
         }
 
-        private int passAndCount(StreamConsumerManager.CommittedEpochSource epochs,
-                                 List<StreamConsumerManager.SubscriptionKey> keys,
-                                 AtomicReference<Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey>> lookup) {
-            var before = applies.size();
-            var pass = epochs.forPass(keys);
+        private StreamConsumerManager.CommittedEpochSource fixesLookupBeforeAnswerLands(Runnable landAnswer) {
+            var firstPass = new AtomicBoolean(true);
 
-            if (applies.size() > before) {
-                lookup.set(pass);
-            }
+            return keys -> firstPass.getAndSet(false)
+                           ? inTheBadOrder(keys, landAnswer)
+                           : source.forPass(keys);
+        }
+
+        /// One pass that did all of it: its lookup is fixed while the slot is busy, then the answer lands and the pass wins
+        /// the slot the answer freed. The real source is called in that order, once for the lookup and until one call sends.
+        private Fn1<Option<RewindEpoch>, StreamConsumerManager.SubscriptionKey> inTheBadOrder(List<StreamConsumerManager.SubscriptionKey> keys,
+                                                                                               Runnable landAnswer) {
+            var fixed = source.forPass(keys);
+            var sentBefore = applies.size();
+
+            landAnswer.run();
+            PollUntil.pollUntil(() -> sentAfterPass(keys), sent -> sent > sentBefore, AWAIT_DEADLINE)
+                     .assertMet("the slot freed after the answer landed");
+
+            return fixed;
+        }
+
+        private int sentAfterPass(List<StreamConsumerManager.SubscriptionKey> keys) {
+            source.forPass(keys);
 
             return applies.size();
         }

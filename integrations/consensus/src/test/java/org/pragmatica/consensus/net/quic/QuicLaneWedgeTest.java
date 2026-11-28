@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +42,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicStreamChannel;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -95,11 +97,11 @@ class QuicLaneWedgeTest {
 
     @Test
     void igsHook_acceptorStandInAfterDialerLanes_consensusCarriesEveryAcknowledgedWriteBothWays() {
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(150));
+        Pause.pause(Duration.ofMillis(150));
         var opened = new CompletableFuture<Option<QuicStreamChannel>>();
         acceptorSide.get().openLane(StreamType.CONSENSUS, opened::complete);
         opened.orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
+        Pause.pause(Duration.ofMillis(300));
 
         burst(acceptorSide.get(), ACCEPTOR, "a2d-", receivedByDialer);
         burst(dialerSide, DIALER, "d2a-", receivedByAcceptor);

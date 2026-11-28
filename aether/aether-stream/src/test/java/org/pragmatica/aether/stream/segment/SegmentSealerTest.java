@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.segment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -33,6 +34,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.lang.Unit.unit;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -372,7 +374,7 @@ class SegmentSealerTest {
             var attemptsAtDeletion = attempts.get();
             var failuresAtDeletion = failingSealer.sealFailureCount();
 
-            LockSupport.parkNanos(RETRY_WINDOW_NANOS);
+            Pause.pause(Duration.ofNanos(RETRY_WINDOW_NANOS));
             // Both failures were counted before deletion and the next retry is ~200 ms out, so nothing is in
             // flight: the retry must stop at the cancelled check, neither calling the sink nor failing again
             // (a counted failure) on the heap copy the deletion dropped.

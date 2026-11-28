@@ -24,6 +24,7 @@ public sealed interface Recoveries {
     String DEPARTURE_INFERRED_CONFIRMED = "departure-inferred-confirmed";
     String DEPARTURE_BREAKER_CLEARED = "departure-breaker-cleared";
     String PLACEMENT_VALID = "placement-valid";
+    String PLACEMENT_AUDIENCE_AVAILABLE = "placement-audience-available";
     String JOIN_MATCHED = "join-matched";
     String APPLY_DEADLINE_CLEARED = "apply-deadline-cleared";
     String RETRY_EXHAUSTED_SETTLED = "retry-exhausted-settled";

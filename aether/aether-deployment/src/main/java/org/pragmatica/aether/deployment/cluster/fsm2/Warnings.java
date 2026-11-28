@@ -18,6 +18,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.TxDraft;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
@@ -51,6 +52,7 @@ import org.pragmatica.lang.Option;
 ///   open and the replacement closed, nothing when a member leaves while another stays.
 public sealed interface Warnings {
     String INVALID_PLACEMENT = "invalid-placement";
+    String EMPTY_AUDIENCE = "placement-audience-empty";
     String RETRY_EXHAUSTED = "retry-exhausted-unsettled";
     String SCHEMA_UNKNOWN = "schema-status-unknown";
     String SCHEMA_STALLED = "schema-migration-stalled";
@@ -64,8 +66,9 @@ public sealed interface Warnings {
     String GROWTH_BLOCKED = Directory.GROWTH_BLOCKED;
     String APPLY_DEADLINE = Deadlines.EXCEEDED;
 
-    /// The 13 leader-local families: each opener code with its recovery code.
+    /// The 14 leader-local families: each opener code with its recovery code.
     Map<String, String> FAMILIES = Map.ofEntries(Map.entry(INVALID_PLACEMENT, Recoveries.PLACEMENT_VALID),
+                                                 Map.entry(EMPTY_AUDIENCE, Recoveries.PLACEMENT_AUDIENCE_AVAILABLE),
                                                  Map.entry(RETRY_EXHAUSTED, Recoveries.RETRY_EXHAUSTED_SETTLED),
                                                  Map.entry(SCHEMA_UNKNOWN, Recoveries.SCHEMA_STATUS_READABLE),
                                                  Map.entry(SCHEMA_STALLED, Recoveries.SCHEMA_MIGRATION_PROGRESSED),
@@ -151,6 +154,11 @@ public sealed interface Warnings {
                                                             (m, set) -> m.invalidPlacementWarned = set,
                                                             Warnings::artifactOf,
                                                             (m, subject, _, _) -> targetTest(m, subject))),
+                                              Map.entry(EMPTY_AUDIENCE,
+                                                        set(m -> m.emptyAudienceWarned,
+                                                            (m, set) -> m.emptyAudienceWarned = set,
+                                                            Warnings::baseOf,
+                                                            (m, subject, _, _) -> baseTest(m, subject))),
                                               Map.entry(RETRY_EXHAUSTED,
                                                         set(m -> m.retryExhaustedWarned,
                                                             (m, set) -> m.retryExhaustedWarned = set,
@@ -787,6 +795,7 @@ public sealed interface Warnings {
     private static List<String> subjects(ClusterModel m, String code) {
         return switch (code) {
             case INVALID_PLACEMENT -> names(m.invalidPlacementWarned.toList(), Artifact::asString);
+            case EMPTY_AUDIENCE -> names(m.emptyAudienceWarned.toList(), ArtifactBase::asString);
             case RETRY_EXHAUSTED -> names(m.retryExhaustedWarned.toList(), Artifact::asString);
             case SCHEMA_UNKNOWN -> m.schemaUnknownWarned.toList();
             case SCHEMA_STALLED -> m.schemaStalledWarned.toList();
@@ -846,6 +855,10 @@ public sealed interface Warnings {
 
     private static Option<Artifact> artifactOf(String subject) {
         return Artifact.artifact(subject).option();
+    }
+
+    private static Option<ArtifactBase> baseOf(String subject) {
+        return ArtifactBase.artifactBase(subject).option();
     }
 
     private static Option<NodeId> nodeOf(String subject) {
@@ -943,6 +956,13 @@ public sealed interface Warnings {
         return artifactOf(subject).filter(artifact -> m.targets.containsKey(artifact.base()))
                          .map(_ -> admitted())
                          .or(() -> gone(subject, "its target was removed between leaders"));
+    }
+
+    /// #3815: the target of the base was removed between the leaders.
+    private static Verdict baseTest(ClusterModel m, String subject) {
+        return baseOf(subject).filter(m.targets::containsKey)
+                     .map(_ -> admitted())
+                     .or(() -> gone(subject, "its target was removed between leaders"));
     }
 
     /// Row 17: the datasource's record was removed, or its status decodes now.

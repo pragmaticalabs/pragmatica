@@ -14,6 +14,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.net.InetSocketAddress;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -38,7 +39,7 @@ class NettySwimTransportDecryptObserverTest {
 
         transport.decryptObserver(recording());
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = HeldPort.udp()) {
             assertThat(transport.start(port, (_, _) -> {}).await().isSuccess()).isTrue();
 
             send(sender, port, AesGcmGossipEncryptor.aesGcmGossipEncryptor(ROTATED_KEY, 2).unwrap().encrypt(PAYLOAD).unwrap());
@@ -65,7 +66,7 @@ class NettySwimTransportDecryptObserverTest {
 
         transport.decryptObserver(recording());
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = HeldPort.udp()) {
             assertThat(transport.start(port, (_, _) -> {}).await().isSuccess()).isTrue();
 
             var tampered = AesGcmGossipEncryptor.aesGcmGossipEncryptor(HELD_KEY, 1).unwrap().encrypt(PAYLOAD).unwrap();
@@ -92,7 +93,7 @@ class NettySwimTransportDecryptObserverTest {
                                                               AesGcmGossipEncryptor.aesGcmGossipEncryptor(HELD_KEY, 1).unwrap())
                                           .unwrap();
 
-        try (var sender = new DatagramSocket(); var log = org.pragmatica.testlogging.LogCapture.capture(NettySwimTransport.class, org.apache.logging.log4j.Level.WARN, true)) {
+        try (var sender = HeldPort.udp(); var log = org.pragmatica.testlogging.LogCapture.capture(NettySwimTransport.class, org.apache.logging.log4j.Level.WARN, true)) {
             assertThat(transport.start(port, (_, _) -> {}).await().isSuccess()).isTrue();
 
             for (var i = 0; i < 3; i++) {

@@ -1,14 +1,15 @@
 package org.pragmatica.cluster.node.rabia;
 
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,7 +28,7 @@ class RabiaNodeLifecycleTest {
     }
 
     private static void succeedAfterDelay(Promise<Unit> promise) {
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
         promise.succeed(Unit.unit());
     }
 
@@ -42,7 +43,7 @@ class RabiaNodeLifecycleTest {
             var topologyStartedAtConsensusStart = new AtomicBoolean();
             var result = RabiaNodeLifecycle.start(RabiaNodeLifecycleTest::later,
                                                   () -> {
-                                                      LockSupport.parkNanos(1_000_000L);
+                                                      Pause.pause(Duration.ofMillis(1));
                                                       topologyStarted.set(true);
 
                                                       return Promise.unitPromise();
@@ -92,7 +93,7 @@ class RabiaNodeLifecycleTest {
             var topologyStoppedAtNetworkStop = new AtomicBoolean();
             var result = RabiaNodeLifecycle.stop(RabiaNodeLifecycleTest::later,
                                                  () -> {
-                                                     LockSupport.parkNanos(1_000_000L);
+                                                     Pause.pause(Duration.ofMillis(1));
                                                      topologyStopped.set(true);
 
                                                      return Promise.unitPromise();

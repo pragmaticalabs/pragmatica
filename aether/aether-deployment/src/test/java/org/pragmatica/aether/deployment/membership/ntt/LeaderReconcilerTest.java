@@ -73,6 +73,7 @@ import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -86,6 +87,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
@@ -2199,6 +2201,354 @@ class LeaderReconcilerTest {
             assertThat(intent.provisionCount()).isZero();
             assertThat(intent.drainCount()).isZero();
             assertThat(ctm.provisionReplacementCalls()).isEmpty();
+        }
+    }
+
+    /// #3439: the surplus drain selects only nodes the drain choke point would accept. Every test seeds SELF plus three MATURE configured
+    /// seeds against a configured core count of 3: a surplus of one. Victims are taken highest id first, so `node-3` is the first pick of the
+    /// unrefused control; the tests refuse it as a voter seed whose certified handoff has not been installed.
+    @Nested
+    class DrainChokePointAgreement {
+        private static final TimeSpan FULL_GRACE_FOLLOW_UP_DELAY =
+            timeSpan(EXPECTED_DRAIN_GRACE.millis() + DEBOUNCE_DELAY.millis()).millis();
+        private static final Cause AWAITS_HANDOFF = Causes.cause("Node retirement awaits certified voter handoff");
+        private final NodeId seed1 = new NodeId("aether-test-cluster-node-1");
+        private final NodeId seed2 = new NodeId("aether-test-cluster-node-2");
+        private final NodeId seed3 = new NodeId("aether-test-cluster-node-3");
+
+        @BeforeEach
+        void seedOneSurplusCore() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(seed1, seed2, seed3);
+        }
+
+        @Contract
+        private void runFirstPass() {
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        }
+
+        @Test
+        void control_unrefused_drainsTheHighestIdSeed() {
+            runFirstPass();
+
+            assertThat(ctm.drainNodeCalls()).as("control: with nothing refused the first pick is the highest id").containsExactly(seed3);
+        }
+
+        /// The surplus drain is the OVERPROVISION_PARTITION_HEAL trim, a reason the choke point refuses a replacement-paired node for: the
+        /// selector asks, and dispatch gives, that reason and no other.
+        @Test
+        void theSelectorAsksAndDispatchGives_theSurplusTrimReason() {
+            runFirstPass();
+
+            assertThat(ctm.drainReasons()).as("dispatch gives the surplus-trim reason").containsExactly(DrainReason.OVERPROVISION_PARTITION_HEAL);
+            assertThat(ctm.refusalAskedReasons()).as("the selector asks for the same reason").containsOnly(DrainReason.OVERPROVISION_PARTITION_HEAL);
+        }
+
+        /// Failure input 1: a configured voter seed whose certified handoff is missing is selected. The choke point refuses it for as long as
+        /// the handoff is missing, and nothing else was retired in its place.
+        @Test
+        void voterSeedWithTheHandoffMissing_isNeverSelected_anotherSurplusMemberDrainsInItsPlace() {
+            ctm.refuseDrainOf(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+
+            runFirstPass();
+
+            assertThat(ctm.drainNodeCalls()).as("the refused seed is skipped and the next surplus member is retired").containsExactly(seed2);
+            assertThat(ctm.refusedDrainCalls()).as("nothing the choke point refuses reaches it").isEmpty();
+        }
+
+        /// Failure input 2: a selector that does not ask the choke point's predicate. With every candidate refused the whole surplus is
+        /// deferred (never dispatched into a refusal), the refusals are told once, and the deferral arms its re-evaluation.
+        @Test
+        void everyCandidateRefused_dispatchesNothing_recordsEachRefusal_andArmsTheFollowUp() {
+            ctm.refuseDrainOf(_ -> Option.some(AWAITS_HANDOFF));
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+
+                assertThat(ctm.drainNodeCalls()).as("nothing is drained").isEmpty();
+                assertThat(ctm.refusedDrainCalls()).as("and nothing is dispatched into a refusal").isEmpty();
+                assertThat(reconciler.drainRefusalsView()).as("every refusal is observable state")
+                                                          .containsOnlyKeys(seed1, seed2, seed3)
+                                                          .containsValue(AWAITS_HANDOFF.message());
+                assertThat(capture.messages()).as("each refusal is told, with its cause")
+                                              .filteredOn(line -> line.contains("was refused:"))
+                                              .hasSize(3)
+                                              .allMatch(line -> line.contains(AWAITS_HANDOFF.message()));
+                assertThat(capture.messages()).as("the deferral WARN names the refusals that caused it")
+                                              .anyMatch(line -> line.contains("deferring surplus drain")
+                                                                && line.contains("drainRefusals={")
+                                                                && line.contains(AWAITS_HANDOFF.message()));
+            }
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY)).as("the deferral arms one re-evaluation").hasSize(1);
+        }
+
+        /// A refusal that persists is told on its transition, not on every pass.
+        @Test
+        void aRefusalThatPersists_isToldOnce_notOnEveryPass() {
+            ctm.refuseDrainOf(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+                triggerAndFireReconcile();
+                triggerAndFireReconcile();
+
+                assertThat(capture.messages()).filteredOn(line -> line.contains("was refused:")).hasSize(1);
+            }
+        }
+
+        /// Failure input 3: the choke point answers differently at dispatch than it did at selection (the handoff state moved in between).
+        /// `dispatchSingleDrain` must not swallow the refusal: it is told and recorded.
+        @Test
+        void aRefusalThatReachesDispatch_isToldAndRecorded_notSwallowed() {
+            ctm.refuseDrainAtDispatchOnly(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+
+                assertThat(ctm.refusedDrainCalls()).as("control: the drain did reach the choke point and was refused").containsExactly(seed3);
+                assertThat(reconciler.drainRefusalsView()).as("the dispatched refusal is observable state")
+                                                          .containsEntry(seed3, AWAITS_HANDOFF.message());
+                assertThat(capture.messages()).as("and it is told")
+                                              .anyMatch(line -> line.contains("was refused:")
+                                                                && line.contains(seed3.id())
+                                                                && line.contains(AWAITS_HANDOFF.message()));
+            }
+        }
+
+        /// A refusal that stops holding is forgotten, so the node is drainable again and a later refusal is told afresh.
+        @Test
+        void aDrainTheChokePointAccepts_clearsTheNodesRefusal() {
+            ctm.refuseDrainAtDispatchOnly(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).containsKey(seed3);
+
+            ctm.refuseDrainAtDispatchOnly(_ -> Option.none());
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls()).as("the next pass drains it").containsExactly(seed3);
+            assertThat(reconciler.drainRefusalsView()).as("and its refusal is gone").isEmpty();
+        }
+
+        /// A refused node that leaves the cluster is no longer a candidate: its refusal is forgotten, not kept as stale state.
+        @Test
+        void aRefusedNodeThatLeaves_isForgotten() {
+            var seed4 = new NodeId("aether-test-cluster-node-4");
+            ctm.refuseDrainOf(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).containsOnlyKeys(seed3);
+
+            removePeers(seed3);
+            seedClusterWithPeers(seed4);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.drainRefusalsView()).as("the departed node's refusal is gone").isEmpty();
+        }
+
+        /// Failure input 4: the surplus must drain once the handoff appears. The refused pass arms the follow-up; the follow-up asks the
+        /// predicate again.
+        @Test
+        void onceTheHandoffAppears_theFollowUpDrainsTheSurplus() {
+            ctm.refuseDrainOf(_ -> Option.some(AWAITS_HANDOFF));
+            runFirstPass();
+            assertThat(ctm.drainNodeCalls()).as("refused: nothing drained").isEmpty();
+            assertThat(scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY)).as("the refused pass armed its re-evaluation").hasSize(1);
+
+            ctm.refuseDrainOf(_ -> Option.none());
+            agePastDrainSafetyGrace();
+            scheduler.tasksByDelay(FULL_GRACE_FOLLOW_UP_DELAY).getFirst().runIfLive();
+            fireDebouncedReconcile();
+
+            assertThat(ctm.drainNodeCalls()).as("the handoff appeared: the follow-up drains the surplus").containsExactly(seed3);
+            assertThat(reconciler.drainRefusalsView()).as("and nothing is refused any more").isEmpty();
+        }
+
+        private long refusedWarnings(LogCapture capture) {
+            return capture.messages().stream().filter(line -> line.contains("was refused:")).count();
+        }
+
+        private void refuseSeed3() {
+            ctm.refuseDrainOf(node -> node.equals(seed3) ? Option.some(AWAITS_HANDOFF) : Option.none());
+        }
+
+        private void startNextTerm() {
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getLast().runIfLive();
+        }
+
+        /// The record's life: an entry holds only while a surplus episode that asked about the node is open (invariant 3). P1: the refused
+        /// node's own departure closes the surplus, and nothing else is left to keep it open, so the record must empty with it.
+        @Test
+        void aRefusedNodeThatLeavesAndClosesTheSurplus_isForgotten() {
+            refuseSeed3();
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).as("control: the refusal is held while the surplus is open").containsOnlyKeys(seed3);
+
+            removePeers(seed3);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.drainRefusalsView()).as("the surplus closed with the departure: no refusal outlives it").isEmpty();
+        }
+
+        /// The record's life is the term's (invariant 1). P2: a leader change empties it, so a deposed leader reports nothing it no longer asks.
+        @Test
+        void deactivate_clearsTheRefusalView() {
+            ctm.refuseDrainOf(_ -> Option.some(AWAITS_HANDOFF));
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).as("control: the term holds its refusals").containsOnlyKeys(seed1, seed2, seed3);
+
+            reconciler.deactivate();
+
+            assertThat(reconciler.drainRefusalsView()).as("the term ended: its record ended").isEmpty();
+        }
+
+        /// P3: the told-state has the record's life, so the next term tells the unchanged refusal again.
+        @Test
+        void newTerm_tellsTheRefusalAgain() {
+            refuseSeed3();
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+                assertThat(refusedWarnings(capture)).as("control: the first term tells it once").isEqualTo(1);
+
+                reconciler.deactivate();
+                startNextTerm();
+
+                assertThat(refusedWarnings(capture)).as("the new term tells the unchanged refusal again").isEqualTo(2);
+            }
+        }
+
+        /// Site: the configured core count is raised, so `drainCount` reaches 0 with the refused member still present (invariant 3).
+        @Test
+        void aRaisedCoreCountClosesTheSurplus_theRecordIsEmptied() {
+            refuseSeed3();
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).as("control: refused while the surplus is open").containsOnlyKeys(seed3);
+
+            configuredCoreCount.set(4);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.drainRefusalsView()).as("no surplus: no refusal").isEmpty();
+        }
+
+        /// Site: a paired surge replacement is counted out of the surplus, so `drainCount` reaches 0 with every member still present.
+        @Test
+        void aSurgeReplacementClosesTheSurplus_theRecordIsEmptied() {
+            refuseSeed3();
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).as("control: refused while the surplus is open").containsOnlyKeys(seed3);
+
+            reconciler.setSurgeReplacements(() -> Set.of(seed1));
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.drainRefusalsView()).as("the surge is not surplus: no refusal").isEmpty();
+        }
+
+        /// Site: a surplus that closes and later reopens is a new episode, so the unchanged refusal is told again.
+        @Test
+        void aSurplusThatClosesAndReopens_tellsTheRefusalAgain() {
+            refuseSeed3();
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+                assertThat(refusedWarnings(capture)).as("control: told once in the first episode").isEqualTo(1);
+
+                configuredCoreCount.set(4);
+                triggerAndFireReconcile();
+                configuredCoreCount.set(3);
+                triggerAndFireReconcile();
+
+                assertThat(refusedWarnings(capture)).as("the second episode tells it again").isEqualTo(2);
+            }
+        }
+
+        /// Site: a refusal that reaches the record AFTER its term ended (the drain outcome completes on another thread) is not the new
+        /// term's and is not recorded (invariant 1).
+        @Test
+        void aRefusalThatArrivesAfterTheTermEnded_isNotRecorded() {
+            var outcome = Promise.<Unit> promise();
+
+            ctm.holdDrainOutcome(outcome);
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+                assertThat(ctm.drainNodeCalls()).as("control: the drain was dispatched and is pending").containsExactly(seed3);
+
+                reconciler.deactivate();
+                outcome.fail(AWAITS_HANDOFF);
+
+                // The outcome's callbacks run on another thread: hold the absence for a window, never read it once.
+                await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+                    assertThat(reconciler.drainRefusalsView()).as("a deposed term records nothing").isEmpty();
+                    assertThat(refusedWarnings(capture)).as("and tells nothing").isZero();
+                });
+            }
+        }
+
+        /// Control for the test above: the same late refusal, arriving while the term is live, IS recorded, so the absence above is not a
+        /// callback that never ran.
+        @Test
+        void control_aRefusalThatArrivesInTheTerm_isRecorded() {
+            var outcome = Promise.<Unit> promise();
+
+            ctm.holdDrainOutcome(outcome);
+            runFirstPass();
+            outcome.fail(AWAITS_HANDOFF);
+
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> assertThat(reconciler.drainRefusalsView()).containsEntry(seed3, AWAITS_HANDOFF.message()));
+        }
+
+        /// F3: a drain that fails for a reason that is not a refusal is not "refused": not told as one, not recorded as one.
+        @Test
+        void aDrainFailureThatIsNotARefusal_isNeitherToldNorRecordedAsRefused() {
+            ctm.failDrainOutcome(Causes.cause("consensus put timed out"));
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+
+                assertThat(ctm.drainNodeCalls()).as("control: the drain was dispatched and failed").containsExactly(seed3);
+                assertThat(refusedWarnings(capture)).as("a non-refusal failure is not told as a refusal").isZero();
+                assertThat(reconciler.drainRefusalsView()).as("nor recorded as one").isEmpty();
+            }
+        }
+
+        /// Invariant 2 on a held pass (#3324): the surplus episode is open but not asking, so entries stay for the members that remain, and a
+        /// refused node that leaves is forgotten all the same.
+        @Test
+        void aRefusedNodeThatLeavesWhileTheSurplusIsHeld_isForgotten() {
+            var seed4 = new NodeId("aether-test-cluster-node-4");
+
+            refuseSeed3();
+            runFirstPass();
+            assertThat(reconciler.drainRefusalsView()).as("control: the refusal is held while the surplus is open").containsOnlyKeys(seed3);
+            ctm.setAutoHealEnabled(false, "test: operator disabled auto-heal");
+            var drainedBeforeTheHold = ctm.drainNodeCalls().size();
+
+            removePeers(seed3);
+            seedClusterWithPeers(seed4);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls()).as("control: the held pass drained nothing").hasSize(drainedBeforeTheHold);
+            assertThat(reconciler.drainRefusalsView()).as("the departed node's refusal is gone").isEmpty();
+        }
+
+        /// Invariant 1 for a write inside a pass: the term ends while the selector is asking the choke point, so the selector's own writes
+        /// land after `deactivate` emptied the record and the pass empties it again.
+        @Test
+        void aTermThatEndsMidPass_leavesNoRefusalBehind() {
+            ctm.refuseDrainOf(_ -> endTheTermAndRefuse());
+
+            try (var capture = LogCapture.capture(LeaderReconciler.class, Level.WARN, false)) {
+                runFirstPass();
+
+                assertThat(reconciler.drainRefusalsView()).as("a deposed term records nothing, even from the pass it ended in").isEmpty();
+                assertThat(capture.messages()).as("and the ended pass defers nothing").noneMatch(line -> line.contains("deferring surplus drain"));
+            }
+        }
+
+        private Option<Cause> endTheTermAndRefuse() {
+            reconciler.deactivate();
+
+            return Option.some(AWAITS_HANDOFF);
         }
     }
 
@@ -5722,6 +6072,46 @@ class LeaderReconcilerTest {
             return List.copyOf(drainNodeCalls);
         }
 
+        /// #3439: the drain choke point's refusal, ONE predicate that both [#drainRefusal] (what the selector asks) and [#drainNode] (what
+        /// dispatch hits) answer from, as `ClusterTopologyManagerRecord` does. Nothing is refused by default.
+        private volatile Function<NodeId, Option<Cause>> chokeRefusal = _ -> Option.none();
+        /// #3439: a refusal only [#drainNode] gives — the choke point's answer changed between the selector's ask and the dispatch.
+        private volatile Function<NodeId, Option<Cause>> dispatchOnlyRefusal = _ -> Option.none();
+        private final List<NodeId> refusedDrainCalls = new CopyOnWriteArrayList<>();
+        private final List<DrainReason> refusalAskedReasons = new CopyOnWriteArrayList<>();
+
+        void refuseDrainOf(Function<NodeId, Option<Cause>> refusal) {
+            chokeRefusal = refusal;
+        }
+
+        /// What a dispatched (not refused) drain completes with: success by default, a pending promise or a non-refusal failure on demand.
+        private volatile Promise<Unit> drainOutcome = Promise.success(unit());
+
+        void holdDrainOutcome(Promise<Unit> outcome) {
+            drainOutcome = outcome;
+        }
+
+        void failDrainOutcome(Cause cause) {
+            drainOutcome = cause.promise();
+        }
+
+        void refuseDrainAtDispatchOnly(Function<NodeId, Option<Cause>> refusal) {
+            dispatchOnlyRefusal = refusal;
+        }
+
+        List<NodeId> refusedDrainCalls() {
+            return List.copyOf(refusedDrainCalls);
+        }
+
+        @Override public Option<Cause> drainRefusal(NodeId targetNodeId, DrainReason reason) {
+            refusalAskedReasons.add(reason);
+            return chokeRefusal.apply(targetNodeId);
+        }
+
+        List<DrainReason> refusalAskedReasons() {
+            return List.copyOf(refusalAskedReasons);
+        }
+
         /// When set, the three operations of the in-flight path run on this real topology manager (the recording stays).
         volatile ClusterTopologyManager real;
         private final List<DroppedReap> droppedReaps = new CopyOnWriteArrayList<>();
@@ -5797,9 +6187,16 @@ class LeaderReconcilerTest {
 
         @Override
         public Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
+            var refusal = drainRefusal(targetNodeId, reason).orElse(() -> dispatchOnlyRefusal.apply(targetNodeId));
+
+            if (refusal.isPresent()) {
+                refusedDrainCalls.add(targetNodeId);
+                return refusal.unwrap().promise();
+            }
+
             drainNodeCalls.add(targetNodeId);
             drainReasons.add(reason);
-            return Promise.success(unit());
+            return drainOutcome;
         }
 
         @Override

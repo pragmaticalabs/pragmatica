@@ -20,7 +20,6 @@ import java.net.SocketAddress;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.locks.LockSupport;
 
 import io.netty.channel.ChannelFuture;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -45,6 +44,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -260,11 +260,7 @@ class QuicClusterNetworkOfflineTtlTest {
     }
 
     private static void parkPast(long nanos) {
-        var deadline = System.nanoTime() + nanos;
-
-        while (System.nanoTime() < deadline) {
-            LockSupport.parkNanos(Duration.ofMillis(10).toNanos());
-        }
+        Pause.pause(Duration.ofNanos(nanos));
     }
 
     private static QuicPeerConnection connectionWith(NodeId peerId, QuicStreamChannel stream) {

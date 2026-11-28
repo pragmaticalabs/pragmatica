@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -49,7 +50,7 @@ final class UdpGate implements AutoCloseable {
 
     static UdpGate udpGate(int targetPort) {
         try {
-            var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
+            var gate = new UdpGate(HeldPort.udp(InetAddress.getLoopbackAddress()),
                                    new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort),
                                    0L);
 
@@ -64,7 +65,7 @@ final class UdpGate implements AutoCloseable {
     /// is repeatable up to thread scheduling) — QUIC loss and retransmission on demand.
     static UdpGate lossyRelay(int targetPort, double dropRate, long seed) {
         try {
-            var gate = new UdpGate(new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0)),
+            var gate = new UdpGate(HeldPort.udp(InetAddress.getLoopbackAddress()),
                                    new InetSocketAddress(InetAddress.getLoopbackAddress(), targetPort),
                                    seed);
 
@@ -129,7 +130,7 @@ final class UdpGate implements AutoCloseable {
 
     private DatagramSocket newUpstream(SocketAddress client) {
         try {
-            var socket = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+            var socket = HeldPort.udp(InetAddress.getLoopbackAddress());
 
             spawn(() -> relayToClient(socket, client));
             return socket;

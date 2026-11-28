@@ -15,6 +15,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,7 +32,7 @@ class ClusterUpgradeWaitFailoverTest {
 
     @BeforeEach
     void start() throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server = HeldPort.httpServer();
         server.createContext("/api/v1/upgrade/status", this::status);
         server.createContext("/api/v1/cluster/topology", this::topology);
         server.start();

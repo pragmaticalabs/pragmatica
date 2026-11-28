@@ -41,6 +41,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
+import org.pragmatica.portbind.HeldPort;
 
 import static io.netty.handler.codec.http3.Http3.supportedApplicationProtocols;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -156,7 +157,7 @@ class HttpServerStopTest {
             var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
             var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
-            try (var taken = new ServerSocket(0)) {
+            try (var taken = HeldPort.tcp()) {
                 assertGroupsTerminatedWhenFailureReported(NettyHttpServer.createOwning(HttpServerConfig.httpServerConfig("bind-fail",
                                                                                                                          taken.getLocalPort()),
                                                                                        NO_HANDLER,
@@ -262,7 +263,7 @@ class HttpServerStopTest {
         void create_bindFailure_terminatesItsGroupBeforeFailing() throws IOException {
             var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
 
-            try (var taken = new DatagramSocket(0)) {
+            try (var taken = HeldPort.udp()) {
                 assertGroupsTerminatedWhenFailureReported(Http3Server.bind(HttpServerConfig.httpServerConfig("bind-fail-h3",
                                                                                                              taken.getLocalPort()),
                                                                            quicSsl(),

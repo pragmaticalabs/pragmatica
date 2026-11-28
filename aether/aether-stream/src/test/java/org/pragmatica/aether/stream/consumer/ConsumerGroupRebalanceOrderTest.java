@@ -11,11 +11,14 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -69,7 +72,15 @@ class ConsumerGroupRebalanceOrderTest {
         registry = ConsumerGroupRegistry.consumerGroupRegistry();
         router.addRoute(ValuePut.class, this::route);
         router.addRoute(ValueRemove.class, this::routeRemove);
+        createStream();
         coordinator = newCoordinator(1L);
+    }
+
+    /// #3041: a consumer-group write is admitted only while its stream's config is committed.
+    private void createStream() {
+        store.process(store.createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(StreamConfigKey.streamConfigKey(STREAM),
+                                                                                           StreamConfigValue.streamConfigValue(StreamConfig.streamConfig(STREAM)
+                                                                                                                                           .withIncarnation(1L))))));
     }
 
     @SuppressWarnings("unchecked")
@@ -89,7 +100,8 @@ class ConsumerGroupRebalanceOrderTest {
     private ConsumerGroupCoordinator newCoordinator(long leaderTerm) {
         var created = ConsumerGroupCoordinator.consumerGroupCoordinator(heldClusterNode(),
                                                                         registry,
-                                                                        () -> Epoch.epoch(1L, leaderTerm, 0L));
+                                                                        () -> Epoch.epoch(1L, leaderTerm, 0L),
+                                                                        StreamLives.committedIn(store));
 
         created.onLeaderChange(new LeaderChange(Option.some(SELF), true));
 
@@ -629,7 +641,8 @@ class ConsumerGroupRebalanceOrderTest {
             var term = new java.util.concurrent.atomic.AtomicLong(1L);
             var c = ConsumerGroupCoordinator.consumerGroupCoordinator(heldClusterNode(),
                                                                      registry,
-                                                                     () -> Epoch.epoch(1L, term.get(), 0L));
+                                                                     () -> Epoch.epoch(1L, term.get(), 0L),
+                                                                     StreamLives.committedIn(store));
             c.onLeaderChange(new LeaderChange(Option.some(SELF), true));
             c.joinGroup(GROUP, STREAM, PARTITIONS, "c1", NODE_A);
             c.joinGroup(GROUP, STREAM, PARTITIONS, "c2", NODE_B);

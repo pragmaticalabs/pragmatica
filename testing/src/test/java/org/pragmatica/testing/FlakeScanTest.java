@@ -58,9 +58,7 @@ class FlakeScanTest {
         assertThat(Files.isRegularFile(root.resolve(ALLOW_LIST))).as("repository root %s must hold %s (else the scan examines nothing)", root, ALLOW_LIST).isTrue();
         assertThat(scan.examinedFiles()).as("positive controls: the scan reached the whole repository, including this test")
                                         .hasSizeGreaterThan(MINIMUM_EXAMINED_FILES)
-                                        .contains("testing/src/test/java/org/pragmatica/testing/FlakeScanTest.java")
-                                        .as("positive control: the scan reached the tree the PICK_THEN_REBIND pass covers")
-                                        .contains("aether/node/src/test/java/org/pragmatica/aether/node/ClusterTestPorts.java");
+                                        .contains("testing/src/test/java/org/pragmatica/testing/FlakeScanTest.java");
         assertThat(scan.hits()).as("positive control: the allow-listed census is still seen by the scan").isNotEmpty();
         assertThat(scan.hits()).as("positive control: the declared walks are still seen by the scan")
                                .anyMatch(hit -> hit.kind() == FlakeScan.Kind.REPO_WALK);
@@ -139,6 +137,34 @@ class FlakeScanTest {
     }
 
     @Test
+    void scan_aSingleCallParkNanosSleep_isFlaggedAsParkSleep_andNeverExcused() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        assertThat(hits).extracting(FlakeScan.Hit::kind).containsExactly(FlakeScan.Kind.PARK_SLEEP);
+        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1, Map.of())).anyMatch(problem -> problem.contains("PARK_SLEEP at"));
+    }
+
+    @Test
+    void problems_aParkSleepHit_namesPollUntilAndPauseAsTheFix() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of());
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("flake pattern PARK_SLEEP at m/src/test/java/A.java:",
+                                                 "org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline)",
+                                                 "org.pragmatica.testing.Pause.pause(duration)");
+    }
+
+    @Test
+    void scan_aParkNanosInsideALoop_isNotFlagged() throws IOException {
+        var scan = FlakeScan.scan(plant("A.java", methodBody("while (!done()) {", "    LockSupport.park" + "Nanos(1_000L);", "}")));
+
+        assertThat(scan.examinedFiles()).containsExactly("m/src/test/java/A.java");
+        assertThat(scan.hits()).isEmpty();
+    }
+
+    @Test
     void problems_aWalkThatIsNeverAnAllowListEntry_isStillReportedWhenTheListNamesIt() throws IOException {
         var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
 
@@ -214,8 +240,6 @@ class FlakeScanTest {
         planted.put("int httpPort" + " = 8080;", FlakeScan.Kind.FIXED_PORT);
         planted.put("long udpPort" + " = 9000;", FlakeScan.Kind.FIXED_PORT);
         planted.put("Integer serverPort" + " = 9100;", FlakeScan.Kind.FIXED_PORT);
-        planted.put("var s = new ServerSocket(" + "9100);", FlakeScan.Kind.FIXED_PORT);
-        planted.put("var d = new DatagramSocket(" + "9200);", FlakeScan.Kind.FIXED_PORT);
         planted.put("server.bind" + "(8081);", FlakeScan.Kind.FIXED_PORT);
         planted.put("server.listen" + "(8082);", FlakeScan.Kind.FIXED_PORT);
         planted.put("config.withPort" + "(8083);", FlakeScan.Kind.FIXED_PORT);
@@ -258,8 +282,6 @@ class FlakeScanTest {
         planted.put(wrapped("Thread", "    .sleep" + "(100);"), FlakeScan.Kind.SLEEP);
         planted.put(wrapped("java.util.concurrent.TimeUnit.SECONDS", "    .sleep" + "(1);"), FlakeScan.Kind.SLEEP);
         planted.put(wrapped("int httpPort", "    = 8080;"), FlakeScan.Kind.FIXED_PORT);
-        planted.put(wrapped("var s = new ServerSocket(", "    9100);"), FlakeScan.Kind.FIXED_PORT);
-        planted.put(wrapped("var d = new DatagramSocket(", "    9200);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("server.bind" + "(", "    8081);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("config.withPort" + "(", "    8083);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("assertThat(elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
@@ -411,161 +433,6 @@ class FlakeScanTest {
         assertThat(FlakeScan.scan(root).examinedFiles()).isEmpty();
     }
 
-    /// The location rule (#1826): every form of a port-0 construction is flagged where it stands, unmarked, in a scoped tree.
-    @Test
-    void scan_everyPortZeroConstructor_whenUnmarked_isFlagged() throws IOException {
-        var forms = List.of("new ServerSocket(0)",
-                            "new ServerSocket(0, 50, InetAddress.getLoopbackAddress())",
-                            "new DatagramSocket(0)",
-                            "new DatagramSocket(0, InetAddress.getLoopbackAddress())",
-                            "new java.net.ServerSocket(0)",
-                            "new java.net.DatagramSocket(0)",
-                            "new java . net . DatagramSocket( 0 )",
-                            "new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))",
-                            "new DatagramSocket(new java.net.InetSocketAddress(0))",
-                            "new DatagramSocket()");
-
-        for (var form : forms) {
-            assertThat(portZeroLines(body("var socket = " + form + ";"))).as(form).containsExactly(3);
-        }
-    }
-
-    @Test
-    void scan_everyPortZeroBind_whenUnmarked_isFlagged() throws IOException {
-        var forms = List.of("socket.bind(new InetSocketAddress(0));",
-                            "socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));",
-                            "socket.bind(new java.net.InetSocketAddress(\"127.0.0.1\", 0), 50);",
-                            "ServerSocketChannel.open().bind(new InetSocketAddress(0));",
-                            "DatagramChannel.open().bind(new java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), 0));",
-                            "bootstrap.bind(0);",
-                            "channel.bind(null);");
-
-        for (var form : forms) {
-            assertThat(portZeroLines(body(form))).as(form).containsExactly(3);
-        }
-        assertThat(portZeroLines(body("socket", "    .bind(new InetSocketAddress(", "        InetAddress.getLoopbackAddress(),", "        0));"))).as("wrapped").containsExactly(4);
-    }
-
-    /// F1 and F2 of the first verification: the shapes that let the port out of the socket's lifetime were each a way the old analysis missed.
-    /// None needs to be understood now: the construction is what is flagged, wherever the port goes.
-    @Test
-    void scan_everyWayThePortLeavesTheSocket_isFlaggedAtTheConstruction() throws IOException {
-        var shapes = new LinkedHashMap<String, List<String>>();
-
-        shapes.put("returned", List.of("try (var socket = new DatagramSocket(0)) {", "    return socket.getLocalPort();", "}"));
-        shapes.put("returned qualified", List.of("try (var socket = new java.net.DatagramSocket(0)) {", "    return socket.getLocalPort();", "}"));
-        shapes.put("read into a local, returned", List.of("try (var socket = new ServerSocket(0)) {", "    var port = socket.getLocalPort();", "    return port;", "}"));
-        shapes.put("returned in parentheses", List.of("try (var socket = new ServerSocket(0)) {", "    return (socket.getLocalPort());", "}"));
-        shapes.put("boxed", List.of("try (var socket = new ServerSocket(0)) {", "    return Integer.valueOf(socket.getLocalPort());", "}"));
-        shapes.put("assigned to an outer target", List.of("try (var socket = new ServerSocket(0)) {", "    this.port = socket.getLocalPort();", "}"));
-        shapes.put("collected", List.of("try (var socket = new ServerSocket(0)) {", "    ports.add(socket.getLocalPort());", "}"));
-        shapes.put("handed to a lambda", List.of("try (var socket = new ServerSocket(0)) {", "    ports.forEach(p -> use(socket.getLocalPort()));", "}"));
-        shapes.put("closed explicitly", List.of("var socket = new ServerSocket(0);", "var port = socket.getLocalPort();", "socket.close();", "return port;"));
-        shapes.put("closed in finally", List.of("var socket = new DatagramSocket(0);", "try {", "    return socket.getLocalPort();", "} finally {", "    socket.close();", "}"));
-        shapes.put("bound unbound socket", List.of("var socket = new ServerSocket();", "socket.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));", "var port = socket.getLocalPort();", "socket.close();"));
-        shapes.put("channel", List.of("try (var channel = ServerSocketChannel.open().bind(new InetSocketAddress(0))) {", "    return ((InetSocketAddress) channel.getLocalAddress()).getPort();", "}"));
-        for (var shape : shapes.entrySet()) {
-            assertThat(portZeroLines(body(shape.getValue().toArray(String[]::new)))).as(shape.getKey()).hasSize(1);
-        }
-        assertThat(portZeroLines(body("try (var socket = new java.net.DatagramSocket(0)) {", "    return socket.getLocalPort();", "}"))).as("the QuicClusterNetworkLifecycleTest shape").containsExactly(3);
-    }
-
-    @Test
-    void scan_aMarkedConstruction_isNotFlagged_andAnUnmarkedOneBesideItIs() throws IOException {
-        assertThat(portZeroLines(body("var a = new ServerSocket(0); // port0-held: open until the test ends",
-                                      "var b = new DatagramSocket(0);",
-                                      "socket.bind(new InetSocketAddress(0)); // port0-held: open until the test ends",
-                                      "socket.bind(null);")))
-            .containsExactly(4, 6);
-    }
-
-    /// F3 of the first verification: the socket held while its port is used (the old analysis flagged the assignment) passes only with the marker.
-    @Test
-    void scan_aHeldSocketWhosePortIsUsedInside_passesOnlyWithTheMarker() throws IOException {
-        var held = List.of("try (var held = new ServerSocket(0)) {%s", "    port = held.getLocalPort();", "    start(port);", "}");
-        var unmarked = held.stream().map(line -> line.replace("%s", "")).toArray(String[]::new);
-        var marked = held.stream().map(line -> line.replace("%s", " // port0-held: open for the whole try block, the server runs inside it")).toArray(String[]::new);
-
-        assertThat(portZeroLines(body(unmarked))).containsExactly(3);
-        assertThat(portZeroLines(body(marked))).isEmpty();
-    }
-
-    @Test
-    void scan_aMarkerWithoutAReason_onAnotherLine_orInAString_doesNotCount() throws IOException {
-        assertThat(portZeroLines(body("var a = new ServerSocket(0); // port0-held:",
-                                      "var b = new ServerSocket(0); // port0-held:   ",
-                                      "var c = new ServerSocket(0); // port0-held",
-                                      "var d = new ServerSocket(0); // held: open until the test ends",
-                                      "// port0-held: open until the test ends",
-                                      "var e = new ServerSocket(0);",
-                                      "var f = new ServerSocket(0); var note = \"// port0-held: open until the test ends\";")))
-            .containsExactly(3, 4, 5, 6, 8, 9);
-    }
-
-    @Test
-    void scan_theHelperFile_isNotExamined_butTheSameTextAnywhereElseIs() throws IOException {
-        var source = body("return new DatagramSocket(0);");
-        var helper = "org/pragmatica/aether/node/HeldPort.java";
-
-        write(tmp.resolve("aether/node/src/test/java").resolve(helper), source);
-        write(tmp.resolve("aether/node/src/test/java/org/pragmatica/aether/node/OtherPort.java"), source);
-        write(tmp.resolve("aether/node/src/test/java/org/pragmatica/aether/other/HeldPort.java"), source);
-
-        assertThat(FlakeScan.scan(tmp).hits().stream().map(FlakeScan.Hit::file).toList())
-            .containsExactly("aether/node/src/test/java/org/pragmatica/aether/node/OtherPort.java",
-                             "aether/node/src/test/java/org/pragmatica/aether/other/HeldPort.java");
-        assertThat(PickThenRebind.HELPER).as("the exemption names the helper by its full path").isEqualTo("aether/node/src/test/java/" + helper);
-    }
-
-    @Test
-    void scan_aPortZeroText_inAStringATextBlockOrAComment_isNotAConstruction() throws IOException {
-        assertThat(portZeroLines(body("var a = \"new ServerSocket(0)\";",
-                                      "var b = \"\"\"",
-                                      "    socket.bind(new InetSocketAddress(0));",
-                                      "    new DatagramSocket()",
-                                      "    \"\"\";",
-                                      "// new ServerSocket(0)",
-                                      "/// socket.bind(null)",
-                                      "var c = new ServerSocket(port);",
-                                      "var d = new Socket();",
-                                      "var e = new InetSocketAddress(8080);",
-                                      "r.bind(0, value);")))
-            .isEmpty();
-    }
-
-    @Test
-    void scan_aPortZeroConstruction_outsideTheScopedTrees_isNotExamined() throws IOException {
-        var source = body("var socket = new DatagramSocket(0);");
-
-        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).isEmpty();
-        assertThat(FlakeScan.scan(plantIn("aether/node-extras", "A.java", source)).hits()).isEmpty();
-    }
-
-    @Test
-    void problems_aPickThenRebindHit_isNeverExcused_evenByAnEntryOfItsOwnKey() throws IOException {
-        var hit = FlakeScan.scan(plantIn("aether/node", "A.java", body("var socket = new DatagramSocket(0);"))).hits().getFirst();
-
-        var problems = FlakeScan.problems(List.of(hit), List.of(hit.key()), 1);
-
-        assertThat(problems).hasSize(2);
-        assertThat(problems.getFirst()).contains("PICK_THEN_REBIND", "aether/node/src/test/java/A.java:3", "HeldPort", "port0-held", "ClusterTestPorts");
-        assertThat(problems.getLast()).contains("stale allow-list entry");
-    }
-
-    /// A class `A` whose method body is `lines`: the first body line is line 3.
-    private static String body(String... lines) {
-        return "class A {\n    void m() throws Exception {\n" + String.join("\n", lines) + "\n    }\n}";
-    }
-
-    private List<Integer> portZeroLines(String source) throws IOException {
-        return FlakeScan.scan(plantIn("aether/node", "A.java", source))
-                        .hits()
-                        .stream()
-                        .filter(hit -> hit.kind() == FlakeScan.Kind.PICK_THEN_REBIND)
-                        .map(FlakeScan.Hit::line)
-                        .toList();
-    }
-
     private static String wrapped(String... lines) {
         return String.join("\n", lines);
     }
@@ -582,6 +449,10 @@ class FlakeScanTest {
     }
 
     /// Built from pieces so this file never carries the pattern it scans for.
+    private static String methodBody(String... lines) {
+        return "class A {\n    void m() throws Exception {\n" + String.join("\n", lines) + "\n    }\n}";
+    }
+
     private static String walkLine() {
         return "try (var files = Files" + ".walk(root)) {";
     }
@@ -602,11 +473,6 @@ class FlakeScanTest {
 
     private Path plant(String name, String content) throws IOException {
         write(tmp.resolve("m/src/test/java").resolve(name), content);
-        return tmp;
-    }
-
-    private Path plantIn(String module, String name, String content) throws IOException {
-        write(tmp.resolve(module).resolve("src/test/java").resolve(name), content);
         return tmp;
     }
 

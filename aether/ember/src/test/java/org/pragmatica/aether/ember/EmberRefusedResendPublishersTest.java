@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -47,7 +48,7 @@ class EmberRefusedResendPublishersTest {
     }
 
     private int startStub(int refusals) throws Exception {
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server = HeldPort.httpServer();
         server.createContext("/", exchange -> {
             var refuse = requests.incrementAndGet() <= refusals;
             var body = (refuse ? NOT_PROMOTED : "{}").getBytes(StandardCharsets.UTF_8);

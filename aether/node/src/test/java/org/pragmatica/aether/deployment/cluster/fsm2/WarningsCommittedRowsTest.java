@@ -549,6 +549,20 @@ class WarningsCommittedRowsTest {
         assertThat(m.closeText.get(key).or("")).contains("the subject does not parse");
     }
 
+    /// Hold-test row EMPTY_AUDIENCE (#3815): the subject is the target's base; admitted while `targets` has it, refused (gone) without it. Red
+    /// when a row is adopted for a removed target, refused for a present one, or the subject is not read as a base.
+    @Test
+    void holdTest_emptyAudience_needsTheTargetBase() {
+        var key = FsmWarningKey.fsmWarningKey(Warnings.EMPTY_AUDIENCE, ORDERS.base().asString());
+
+        assertRefused(adopt(model(), key, Map.of()), key, "its target was removed between leaders");
+
+        var m = model();
+
+        m.targets = m.targets.put(ORDERS.base(), target(ORDERS, 1, 1, "WORKERS_ONLY"));
+        assertThat(members(adopt(m, key, Map.of()), Warnings.EMPTY_AUDIENCE, ORDERS.base().asString())).as("admitted").isNotEmpty();
+    }
+
     /// The hold test runs where rule O runs, `inherit` included (rule O over the snapshot): a snapshot row for a removed target is refused.
     @Test
     void inherit_snapshotRowRefusedByItsHoldTest_isClosedWithTheReason() {

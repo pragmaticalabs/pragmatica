@@ -15,7 +15,6 @@ import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HexFormat;
 import java.util.List;
-import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -45,6 +44,7 @@ import org.pragmatica.lang.parse.Text;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.FrameworkCodecs;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.testlogging.LogCapture;
 
 import org.apache.logging.log4j.Level;
@@ -556,7 +556,7 @@ class EmberArtifactFlagDayRestoreTest {
     }
 
     private static boolean pauseThenAwait(BooleanSupplier condition, long deadline) {
-        LockSupport.parkNanos(POLL_NANOS);
+        Pause.pause(Duration.ofNanos(POLL_NANOS));
 
         return awaitUntil(condition, deadline);
     }

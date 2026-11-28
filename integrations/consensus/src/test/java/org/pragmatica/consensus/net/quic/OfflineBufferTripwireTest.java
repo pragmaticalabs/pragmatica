@@ -10,6 +10,7 @@
 
 package org.pragmatica.consensus.net.quic;
 
+import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -23,8 +24,7 @@ import org.pragmatica.messaging.StreamType;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.addressOf;
@@ -80,7 +80,7 @@ class OfflineBufferTripwireTest {
         network.setOfflineBufferCap(CAP);
         offer(network, TIME_FRAMES, "held");
         assertThat(network.offlineBufferSizeForTests(MEMBER)).as("control: the frames are buffered").isEqualTo(TIME_FRAMES);
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(CAP.millis() * 5));
+        Pause.pause(Duration.ofMillis(CAP.millis() * 5));
         network.reconcileMissingPeersTick();
         network.reconcileMissingPeersTick();
 

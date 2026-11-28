@@ -6,13 +6,13 @@ package org.pragmatica.aether.stream.segment;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.LockSupport;
 
 import javax.crypto.AEADBadTagException;
 
@@ -32,6 +32,7 @@ import org.pragmatica.storage.StorageError;
 import org.pragmatica.storage.StorageInstance;
 import org.pragmatica.storage.StorageTier;
 import org.pragmatica.storage.TierLevel;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
@@ -329,7 +330,7 @@ class RetentionAgeLearningBoundsTest {
         }
 
         private Unit pause() {
-            LockSupport.parkNanos(2_000_000);
+            Pause.pause(Duration.ofMillis(2));
 
             return Unit.unit();
         }
