@@ -26,7 +26,7 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #3858 round 2, invariant 1 (report-3858.md:189): a planned-departure mark ends only when the life it was created for is over,
+/// #3858 round 2, invariant 1: a planned-departure mark ends only when the life it was created for is over,
 /// ordered against that life's DEAD edge; it is created only while that edge has not consumed it; it is dropped early only on
 /// evidence that no DEAD edge of that life is pending or in flight; after the DEAD edge nothing re-creates it.
 ///
@@ -38,6 +38,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// Each failing input is two tests: an ENABLED tripwire asserting today's behaviour (it goes red when the behaviour changes, and its
 /// message says what to enable), and the real assertion, `@Disabled` for lane B. A test without the `@Disabled` twin is a control.
+///
+/// Sites of the #3858 round 2 enumeration that no test in this class names, and why none can break the invariant [reading]:
+/// - C1 size cap (R-c): at the cap a new mark is refused and nothing is dropped, so it can only cost a spurious CRITICAL, the
+///   deliberate bias at `AlertManager#onNodeFailed`; it is no ordering against a DEAD edge. Marks leaked by R1 are what could fill it.
+/// - R-b (`containsKey` before the stamp in `markFromBroadcast`): it creates nothing; a consumer that ran between the put and the
+///   check leaves no stamp, and the re-creation after a consumer is R1, which the R1 tests reach.
+/// - R-d (`trackedDrainNodes`): a read-only count with no main caller; the R1 tests use it as the instrument.
+/// - D4 (field copies of the DEAD listeners, MembershipFsm:1405-1419, :1703-1705): plumbing; D2 and D3 are reached through the
+///   notifier by every test here.
+/// - F-a and F-b (the ping handler and the leader's record tick): both end in `observeDrainSet` with the predicates `DrainAssembly`
+///   composes, which these tests call directly. [unverified: no test drives the real feeders or their threads]
+/// - C2 inside a window: the transition listener is staged in the same dispatch as the DEAD hooks of its own node, under that node's
+///   `transitionGuard`, so it cannot interleave with them; `c2Control_*` covers the only order left.
 class PlannedDepartureMarkWindowTest {
     private static final NodeId SELF = new NodeId("observer-node");
     private static final NodeId NODE = new NodeId("drained");

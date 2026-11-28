@@ -56,7 +56,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-/// #3858 round 2, invariant 2 (report-3858.md:193): a drain entry is cleared only by the end of the drain that set it
+/// #3858 round 2, invariant 2: a drain entry is cleared only by the end of the drain that set it
 /// (`DrainCommandRegistry:32-33`); an attempt that ends by `release` leaves its command to the DEAD edge, so no later attempt may
 /// own it (`TopologyDrains:28-29`, `:61-62`).
 ///
@@ -69,6 +69,19 @@ import static org.awaitility.Awaitility.await;
 /// Each failing input is two tests: an ENABLED tripwire asserting today's behaviour (the eviction's command is gone while the
 /// process lives; it goes red when that changes and its message says what to enable), and the real assertion, `@Disabled` for lane B.
 /// A test without a `@Disabled` twin is a control.
+///
+/// Sites of the #3858 round 2 enumeration that no test in this class names, and why none can break the invariant [reading]:
+/// - G2, O1, O2 (the OPERATOR slot's set): the slot has no attempt end; only the DEAD or rejoin edge clears it (O3 -> G4). The shared
+///   id between the two requesters is F3, closed and pinned by `TopologyDrainsRequesterTest`.
+/// - G3, G4, O3 (clear by id, clear by incarnation): a clear by id of a pin another attempt re-took is the failing input above; a clear
+///   by incarnation at the DEAD or rejoin edge ends the life every entry of the node was set for, which is the end the invariant names.
+/// - G5, O5 (reads), O4, O6, T4 (wiring): no mutation.
+/// - T2 (`TopologyDrains.clear`): a no-op when the holder holds nothing (the F2 fix); it only clears when T1 re-took the pin, which is
+///   the E1 input.
+/// - M1's `raiseToDrain` (a pending EVICTION entry becomes a DRAIN attempt): the entry keeps its `seq`, so the same opener's gate and
+///   grace timer own it: one attempt sets the command once and one end clears it.
+/// - M2 joining an existing entry, M3, M4's DRAIN arm: the join sets nothing; the other two are reached by every test above.
+/// - The gate against a concurrent cancel (rule M): pinned by `ClusterTopologyManagerDrainFenceTest`. [unverified: not read in this lane]
 class DrainEntryOwnershipTest {
     private static final NodeId SELF = nodeId("node-self").unwrap();
     private static final NodeId TARGET = nodeId("node-d").unwrap();
