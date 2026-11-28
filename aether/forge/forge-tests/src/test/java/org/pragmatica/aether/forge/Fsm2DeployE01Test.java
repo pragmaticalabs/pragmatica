@@ -9,6 +9,9 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.ember.EmberCluster;
@@ -72,6 +75,8 @@ class Fsm2DeployE01Test {
     private static final double SPEC_LEADER_FLOOR = 4;
     private static final double SPEC_LEADER_TRANSACTIONS = 2 + 2 * SLICES * NODES;
     private static final double SPEC_NODE_ROUNDS = NODES * 4;
+    /// The submission kinds design 7.1 counts for a clean deploy (ClusterModel.SubmitKind names).
+    private static final Set<String> SPEC_KINDS = Set.of("TARGETS", "GOALS", "SUCCEEDED");
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-e01.txt";
 
     private final HttpOperations http = jdkHttpOperations();
@@ -141,6 +146,51 @@ class Fsm2DeployE01Test {
                   .isEqualTo(SPEC_LEADER_TRANSACTIONS);
         assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, at least the 4 causal stages")
                   .isGreaterThanOrEqualTo(SPEC_LEADER_FLOOR);
+    }
+
+    /// #3870 control: the three kinds 7.1 counts (one TARGETS, one GOALS per instance twice over, one SUCCEEDED) still total `2 + 2*S*I`.
+    /// Green at 7b1b881082 and at 9b25af3f33: the red of [#leaderRounds_withinTheSpecBudget] is not a change in the counted kinds.
+    @Test
+    void leaderTransactions_ofTheSpecKinds_areTheSpecBudget() {
+        deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
+                   BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
+        var byKind = submittedByKind();
+        var counted = SPEC_KINDS.stream().mapToDouble(kind -> byKind.getOrDefault(kind, 0.0)).sum();
+
+        assertThat(counted).as("design 7.1: TARGETS + GOALS + SUCCEEDED transactions of a clean deploy, by kind: " + byKind)
+                  .isEqualTo(SPEC_LEADER_TRANSACTIONS);
+    }
+
+    /// #3870, red first: a clean deploy's leader submits no transaction of a kind outside the 7.1 budget. At 9b25af3f33 it submits ROUTES x2
+    /// (#3836, def6eef995: the declared-route DECLARE and PUBLISH of the slice's routes) and WARNINGS x2 (#3852, 3836797a19: the
+    /// `placement-audience-empty` open at the first placement pass, CORE_ONLY with no core yet visible, and its `placement-audience-available` close).
+    /// The fix lane decides per kind: amend 7.1 to count the kind, or stop the transaction. Either turns this green.
+    @Test
+    void leaderTransactions_noKindOutsideTheSpec() {
+        deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
+                   BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
+        var outside = new TreeMap<>(submittedByKind());
+
+        outside.keySet().removeAll(SPEC_KINDS);
+        assertThat(outside).as("design 7.1: leader transactions of a kind outside TARGETS/GOALS/SUCCEEDED, clean deploy")
+                  .isEmpty();
+    }
+
+    /// The leader's `submissions_total{fsm=cluster,outcome=submitted}` by its `kind` tag, summed over the nodes.
+    private Map<String, Double> submittedByKind() {
+        var byKind = new TreeMap<String, Double>();
+
+        cluster.allNodes()
+               .forEach(node -> node.deploymentWiring()
+                                    .meters()
+                                    .find("aether_deployment_fsm_submissions_total")
+                                    .tags("fsm", "cluster", "outcome", "submitted")
+                                    .counters()
+                                    .forEach(counter -> byKind.merge(counter.getId().getTag("kind"),
+                                                                     counter.count(),
+                                                                     Double::sum)));
+
+        return byKind;
     }
 
     private long deployedVersion = -1;
