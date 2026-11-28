@@ -130,14 +130,14 @@ FM = r"FsmBackedLeaderManager\("
 row("M1", "3.6 row 1", FM, "all", 22, "new FsmBackedLeaderManager(a, b, c, d);", files=16,
     note="LM:387 call, LM:400 declaration, 20 test calls in 15 files")
 FSM_CALL = r"\.fsm\(\)"
-row("M2a", "3.6 row 2; 5.19 f3846n F10", FSM_CALL, "integrations-test", 46, "x.fsm();", lines=45, files=19, memo=45,
-    note="RE-DECIDED: 46 occurrences on 45 lines in 19 files; LEEPT:177 holds two. The memo's 45 is the LINE count (grep -c)")
+row("M2a", "3.6 row 2; 5.19 f3846n F10", FSM_CALL, "integrations-test", 48, "x.fsm();", lines=47, files=20, memo=45,
+    note="RE-DECIDED: 46 occurrences on 45 lines in 19 files; LEEPT:177 holds two. The memo's 45 is the LINE count (grep -c). Lane C1: LeaderEpisodeDispatchTest adds 2 occurrences on 2 lines in 1 file (harness.fsm())")
 row("M2b", "3.6 row 2 manager receivers", FSM_CALL, ("integrations-test", r"/(?!LeaderManagerTest|LeaderReconnectTransportTest|PeerObservationOrderTransportTest)[^/]+$"),
     15, "x.fsm();", files=3, note="LMT 1 + LRTT 7 + POTT 7, the receivers the manager row removes")
 row("M2c", "3.6 row 2 LEEPT javac strings and docs", FSM_CALL, ("integrations-test", r"/(?!LeaderEpisodeEntryPathTest)[^/]+$"), 7, "x.fsm();",
     lines=6, files=1, note="LEEPT:98, 99, 107, 161, 162, 177 (177 holds two)")
 row("M2d", "3.6 row 2 harness lines", FSM_CALL, ("integrations-test", r"/(LeaderManagerTest|LeaderReconnectTransportTest|PeerObservationOrderTransportTest|LeaderEpisodeEntryPathTest)\.java$"),
-    24, "x.fsm();", files=15, memo=24, note="FsmTestHarness.fsm() on test-built machines; 46 = 15 + 7 + 24")
+    26, "x.fsm();", files=16, memo=24, note="FsmTestHarness.fsm() on test-built machines; 46 = 15 + 7 + 24. Lane C1: LeaderEpisodeDispatchTest adds 2 in 1 file")
 row("M3", "3.6 row 3", r"\.inbound\(\)", "all", 2, "x.inbound();", files=2, memo=1,
     note="memo 1 missed LeaderInboundForTest:28, a doc mention; code: LM:387 only (row M3m)")
 row("M3m", "3.6 row 3 main", r"\.inbound\(\)", "main", 1, "x.inbound();", files=1)
@@ -150,29 +150,29 @@ row("M7b", "3.6 row 7 test machines", r"var fsm = Fsm\.<", "consensus-test", 4, 
     note="LEPAT:309, LHFT:203, LSDCT:151 and :241 (the memo's 3 files)")
 row("M7c", "3.6 row 7 test machines, wider", r"Fsm\.<[^>]*>\s*fsm\(", "consensus-test", 7, "Fsm.<A, B> fsm(c);", files=6,
     note="FINDING: also LDCT:259, LTSCT:557 (field assignments) and LKFUT:293 (a return); the memo's `var fsm = Fsm.` form missed them")
-row("M7d", "3.6 row 7", r"new LeaderElectionContext\(", "integrations", 36, "new LeaderElectionContext(a);", files=33,
-    note="LEF:214 in main + 35 test sites in 32 files (memo 34 sites in 31 files; LeaderRunTimeRowsTest adds 1 site, 1 file)")
-row("M7e", "3.6 row 7", r"new LeaderElectionContext\(", "test", 35, "new LeaderElectionContext(a);", files=32, memo=34, note="LeaderRunTimeRowsTest adds 1 site in 1 file")
-row("M7f", "3.6 row 7", r"FsmTestHarness", "consensus-test", 118, "FsmTestHarness h;", files=29, memo=28, note="the memo counts files: 28; LeaderRunTimeRowsTest adds 11 occurrences in 1 file")
+row("M7d", "3.6 row 7", r"new LeaderElectionContext\(", "integrations", 37, "new LeaderElectionContext(a);", files=34,
+    note="LEF:214 in main + 36 test sites in 33 files (memo 34 sites in 31 files; LeaderRunTimeRowsTest adds 1 site, 1 file; lane C1: LeaderEpisodeDispatchTest adds 1 site, 1 file)")
+row("M7e", "3.6 row 7", r"new LeaderElectionContext\(", "test", 36, "new LeaderElectionContext(a);", files=33, memo=34, note="LeaderRunTimeRowsTest adds 1 site in 1 file; lane C1: LeaderEpisodeDispatchTest adds 1 site in 1 file")
+row("M7f", "3.6 row 7", r"FsmTestHarness", "consensus-test", 121, "FsmTestHarness h;", files=30, memo=28, note="the memo counts files: 28; LeaderRunTimeRowsTest adds 11 occurrences in 1 file; lane C1: LeaderEpisodeDispatchTest adds 3 in 1 file")
 row("M8", "3.6 row 8; 5.0", r"claimInbound", "all", 9, "claimInbound();", files=4, memo=9)
 row("M9", "3.6 row 9", r"leaderPreVote\(", "all", 5, "leaderPreVote(a);", files=3, note="PreVote:90 definition, Ctx:765, and the 3 calls in LeaderRunTimeRowsTest (K24 forged pre-vote rows)")
-row("M10", "3.6 row 10; 5.0", r"current\(\)", "leader-main", 12, "x.current();", files=3, memo=12,
-    note="12 raw hits; 9 count, 3 do not (Ctx:146, Ctx:1148, State:1647)")
-row("M10t", "3.6 row 10 tests", r"(?:ctx|context|ctx\(\)|context\(\)|contextOf\([^)]*\))\.current\(\)", "leader-fsm-test", 25, "ctx.current();",
-    memo=25, note="25 lines, all in leader.fsm")
+row("M10", "3.6 row 10; 5.0", r"current\(\)", "leader-main", 13, "x.current();", files=3, memo=12,
+    note="13 raw hits; 9 count, 4 do not (Ctx:146, Ctx:1152 the definition, State:1647, and lane C1's fsm.current() in dispatchIfLive, Ctx:1342)")
+row("M10t", "3.6 row 10 tests", r"(?:ctx|context|ctx\(\)|context\(\)|contextOf\([^)]*\))\.current\(\)", "leader-fsm-test", 26, "ctx.current();",
+    memo=25, note="26 lines, all in leader.fsm; lane C1: LeaderEpisodeDispatchTest adds 1")
 row("M11", "3.6 row 11", r"dispatchSelf", "main", 14, "dispatchSelf(e);", files=2,
     note="State:114 definition + 12 calls (13 in State) + 1 doc in Ctx")
 row("M11t", "3.6 row 11 tests", r"dispatchSelf", "test", 8, "dispatchSelf(e);", files=3, memo=8,
     note="LDCT:174, 38, 40, 169, 170, 180; LTSCT:58; OnDrainer:25")
-row("M12", "3.6 row 12", r"dispatchConfined\(", "all", 11, "dispatchConfined(e);", files=5, memo=11, note="7 in main, 4 in tests")
-row("M13", "3.6 row 13", r"unentered\(", "all", 6, "unentered();", files=3)
+row("M12", "3.6 row 12", r"dispatchConfined\(", "all", 12, "dispatchConfined(e);", files=5, memo=11, note="8 in main (lane C1: dispatchIfLive calls it, Ctx:1334), 4 in tests")
+row("M13", "3.6 row 13", r"unentered\(", "all", 7, "unentered();", files=4, note="lane C1: LeaderEpisodeDispatchTest.isCurrent_isFalseForAHandleOverAnEndedLifetime... adds 1 test site")
 row("M14", "3.6 row 14", r"episodeOf\(", "all", 7, "episodeOf(a);", files=4)
 row("M15a", "3.6 row 15; 5.0", r"episodeHandle", "all", 10, "episodeHandle();", files=1, memo=10)
 row("M15b", "3.6 row 15", r"new (?:\w+\.)*(?:Electing|ReElecting|AwaitingKvSync)\(", "all", 3, "new Electing(a);", files=1)
 row("M16", "3.6 row 16", r"new TransitionRequest", "all", 1, "new TransitionRequest(a);", files=1)
 row("M18", "3.6 row 18", r"rescheduleCurrentTick|electLocallyOnTick", "test", 0, "rescheduleCurrentTick();")
-row("M19", "3.6 row 19", r"refusedDispatchesForTest|handlerEpisode|suspicionEpisode", "integrations", 0, "handlerEpisode();",
-    note="the new members; 0 at the head")
+row("M19", "3.6 row 19", r"refusedDispatchesForTest|handlerEpisode|suspicionEpisode", "integrations", 18, "handlerEpisode();",
+    note="the new members: 0 before lane C1; C1 adds the Ctx definitions and docs and 10 test rows (LeaderEpisodeDispatchTest); lane St adds the nine handler calls")
 row("W1", "P9", r"ClusterFsmRouter\.wire\(", ("all", r"/src/test/"), 0, "ClusterFsmRouter.wire(a);", note="main callers: 0")
 row("W2", "P9", r"ClusterFsmRouter\.wire\(", "test", 3, "ClusterFsmRouter.wire(a);", files=2, note="its 3 callers are tests")
 row("L1", "5.0, S3", r"\.end\(\)", "leader-main", 0, "x.end();")
