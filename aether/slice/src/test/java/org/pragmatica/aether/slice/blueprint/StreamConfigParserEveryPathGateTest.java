@@ -11,7 +11,6 @@ import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,8 +22,8 @@ import static org.assertj.core.api.Assertions.fail;
 /// `until_consumed` was already accepted there). The per-group `auto_offset_reset = "latest"` (S1a) is read by the external branch
 /// but not by the resources parse of an OWNED alias, whose consumer tables are read by `parseConsumers` (refused downstream, pinned).
 ///
-/// Each slipping cell is an ENABLED tripwire asserting today's acceptance, with the real assertion `@Disabled` beside it. The fix
-/// flips them: enable the real assertion, delete the tripwire.
+/// Fixed: the external branch runs the same gate as the owned one (`refuseNotYetAvailable`), so the external cells assert the
+/// refusal on every parse entry point.
 class StreamConfigParserEveryPathGateTest {
     private static final String EXTERNAL = "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n";
     private static final String OWNED = "[streams.orders]\nversion = \"1.0.0\"\n";
@@ -78,31 +77,11 @@ class StreamConfigParserEveryPathGateTest {
                          EXTERNAL + "truncation.policy = \"until_consumed\"\n");
     }
 
-    /// Tripwire (ENABLED, current behaviour): `expected_ingress` on an external stream is accepted and ignored by every parse
-    /// entry point; on the base the same input is refused (an unknown key). Fixed: delete this and enable the test below.
-    @Test
-    void externalExpectedIngress_isAcceptedTodayOnEveryParseEntry_tripwire() {
-        externalExpectedIngress().forEach(toml -> assertAcceptedOnEveryParseEntry(toml,
-                                                                                  "#3865 fixed: delete this tripwire and enable externalExpectedIngress_isRefusedNotYetAvailable_onEveryParseEntry for: "
-                                                                                  + toml));
-    }
-
-    @Disabled("#3865 lane B: the external branch must run the NotYetAvailable gate for expected_ingress; enable this, delete the tripwire above")
     @Test
     void externalExpectedIngress_isRefusedNotYetAvailable_onEveryParseEntry() {
         externalExpectedIngress().forEach(toml -> assertRefusedOnEveryParseEntry(toml, "expected_ingress", "S5"));
     }
 
-    /// Tripwire (ENABLED, current behaviour): `truncation.policy = "until_consumed"` on an external stream is accepted and ignored
-    /// by every parse entry point, as it was on the base. Fixed: delete this and enable the test below.
-    @Test
-    void externalUntilConsumed_isAcceptedTodayOnEveryParseEntry_tripwire() {
-        externalUntilConsumed().forEach(toml -> assertAcceptedOnEveryParseEntry(toml,
-                                                                                "#3865 fixed: delete this tripwire and enable externalUntilConsumed_isRefusedNotYetAvailable_onEveryParseEntry for: "
-                                                                                + toml));
-    }
-
-    @Disabled("#3865 lane B: the external branch must run the NotYetAvailable gate for truncation.policy; enable this, delete the tripwire above")
     @Test
     void externalUntilConsumed_isRefusedNotYetAvailable_onEveryParseEntry() {
         externalUntilConsumed().forEach(toml -> assertRefusedOnEveryParseEntry(toml, "truncation.policy", "S3"));

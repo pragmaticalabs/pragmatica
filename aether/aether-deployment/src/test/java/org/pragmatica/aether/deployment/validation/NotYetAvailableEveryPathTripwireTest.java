@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ReplicationContext;
@@ -20,8 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// #3865, the deploy entry points: every key refused as `NotYetAvailable` is refused by `validate` and by `partition` for an
 /// external stream as for an owned one. The gates of `expected_ingress` and `truncation.policy = "until_consumed"` are not on the
 /// external branch of the parser, so both entry points accepted them (the parse-level cells are in
-/// `StreamConfigParserEveryPathGateTest`). Each slipping cell is an ENABLED tripwire asserting today's acceptance with the real
-/// assertion `@Disabled` beside it.
+/// `StreamConfigParserEveryPathGateTest`). Fixed: the external branch runs the same gate, and the external cells assert the refusal.
 class NotYetAvailableEveryPathTripwireTest {
     private static final Artifact APP_ARTIFACT = Artifact.artifact("com.example:my-app:1.0.0").unwrap();
     private static final String EXTERNAL = "[streams.orders]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\n";
@@ -71,31 +69,11 @@ class NotYetAvailableEveryPathTripwireTest {
         assertThat(partitionRefusals(toml)).as("partition refuses: " + toml).contains(GATE);
     }
 
-    /// Tripwire (ENABLED, current behaviour): `validate` and `partition` accept `expected_ingress` on an external stream; the base
-    /// refused it (an unknown key). Fixed: delete this and enable the test below.
-    @Test
-    void externalExpectedIngress_isAcceptedTodayByValidateAndPartition_tripwire() {
-        externalExpectedIngress().forEach(toml -> assertAccepted(toml,
-                                                                 "#3865 fixed: delete this tripwire and enable externalExpectedIngress_isRefusedByValidateAndPartition for: "
-                                                                 + toml));
-    }
-
-    @Disabled("#3865 lane B: the external branch must run the NotYetAvailable gate for expected_ingress; enable this, delete the tripwire above")
     @Test
     void externalExpectedIngress_isRefusedByValidateAndPartition() {
         externalExpectedIngress().forEach(NotYetAvailableEveryPathTripwireTest::assertRefusedAsNotYetAvailable);
     }
 
-    /// Tripwire (ENABLED, current behaviour): `validate` and `partition` accept `truncation.policy = "until_consumed"` on an
-    /// external stream, as the base did. Fixed: delete this and enable the test below.
-    @Test
-    void externalUntilConsumed_isAcceptedTodayByValidateAndPartition_tripwire() {
-        externalUntilConsumed().forEach(toml -> assertAccepted(toml,
-                                                               "#3865 fixed: delete this tripwire and enable externalUntilConsumed_isRefusedByValidateAndPartition for: "
-                                                               + toml));
-    }
-
-    @Disabled("#3865 lane B: the external branch must run the NotYetAvailable gate for truncation.policy; enable this, delete the tripwire above")
     @Test
     void externalUntilConsumed_isRefusedByValidateAndPartition() {
         externalUntilConsumed().forEach(NotYetAvailableEveryPathTripwireTest::assertRefusedAsNotYetAvailable);

@@ -332,8 +332,8 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> refuseDashedConsumerSections(doc,
-                                                                                                                                    streamName))
+            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(StreamConfigParser::refuseNotYetAvailable)
+                                    .flatMap(_ -> refuseDashedConsumerSections(doc, streamName))
                                     .flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
                                                                  source -> parseExternalResource(streamName,
                                                                                                  source,
@@ -496,35 +496,33 @@ public interface StreamConfigParser {
                                 .flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
                                                                               declared.config()).map(_ -> declared))
-                                .flatMap(declared -> refuseNotYetAvailable(section, declared));
+                                .flatMap(declared -> refuseNotYetAvailable(section).map(_ -> declared));
     }
 
     /// The T-146 gate: `truncation.policy = "until_consumed"` is refused, not stored, until release S3 lands the behaviour
-    /// (no accept-and-ignore window). It runs after every other refusal, so a section that is malformed in any other way
-    /// reports that refusal first. S3 deletes its half of this method and its tripwire test; the footprint step (S5) deletes
-    /// the `expected_ingress` half ([#EXPECTED_INGRESS_KEY]) and its tripwire.
-    private static Result<DeclaredStream> refuseNotYetAvailable(StreamSection section, DeclaredStream declared) {
-        var alias = section.alias();
-        var untilConsumed = declared.config()
-                                    .declaration()
-                                    .flatMap(StreamDeclaration::truncation)
-                                    .flatMap(TruncationDeclaration::policy)
-                                    .filter(TruncationPolicy.UNTIL_CONSUMED::equals)
-                                    .isPresent();
-
-        return untilConsumed
-               ? new StreamDeclarationError.NotYetAvailable(alias, "truncation.policy", "S3").result()
-               : refuseExpectedIngress(section, declared);
+    /// (no accept-and-ignore window), and `expected_ingress` is refused whatever its value until the footprint step (S5).
+    /// It is the ONE gate of both branches of a `[streams.<alias>]` section: the owned branch runs it after every other
+    /// refusal ([#parseStreamDeclaration]), so a section that is malformed in any other way reports that refusal first; the
+    /// external (`source = ...`) branch runs it right after the unknown-key refusal ([#parseDeclaredResource]), because an
+    /// external alias is never parsed into a [StreamConfig] but still carries these known keys. It reads the section by
+    /// value (not by key listing), so a key supplied by any configuration layer counts. S3 deletes its half of this method
+    /// and its tripwire test; S5 deletes the `expected_ingress` half ([#EXPECTED_INGRESS_KEY]) and its tripwire.
+    private static Result<StreamSection> refuseNotYetAvailable(StreamSection section) {
+        return section.string("truncation.policy")
+                      .filter("until_consumed"::equals)
+                      .isPresent()
+               ? new StreamDeclarationError.NotYetAvailable(section.alias(), "truncation.policy", "S3").result()
+               : refuseExpectedIngress(section);
     }
 
     /// `expected_ingress` is a plan input that the footprint step (S5) reads, so until then it is a known key that is refused
     /// whatever its value (`NotYetAvailable`), never accepted and ignored, and nothing is stored: the parse of its `<size>/s`
-    /// value waits for that step. Read by value (not by key listing) so a key supplied by any configuration layer counts.
-    private static Result<DeclaredStream> refuseExpectedIngress(StreamSection section, DeclaredStream declared) {
+    /// value waits for that step.
+    private static Result<StreamSection> refuseExpectedIngress(StreamSection section) {
         return section.string(EXPECTED_INGRESS_KEY)
                       .isPresent()
                ? new StreamDeclarationError.NotYetAvailable(section.alias(), EXPECTED_INGRESS_KEY, "S5").result()
-               : success(declared);
+               : success(section);
     }
 
     /// A parsed stream declaration: the config, its factors resolved, the replication warnings they raised and the
