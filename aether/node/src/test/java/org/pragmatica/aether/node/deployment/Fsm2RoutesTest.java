@@ -150,6 +150,11 @@ class Fsm2RoutesTest {
         void put(AetherKey key, AetherValue value) {
             var raw = (KVStore) store;
 
+            if (key instanceof AetherKey.DirectiveReceiptKey) {
+                plantEffect(new KVCommand.Put(key, value));
+                return;
+            }
+
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.Put(key, value))), ++slot);
         }
 
@@ -230,6 +235,11 @@ class Fsm2RoutesTest {
         @SuppressWarnings({"unchecked", "rawtypes"})
         void remove(AetherKey key) {
             var raw = (KVStore) store;
+
+            if (key instanceof AetherKey.DirectiveReceiptKey) {
+                plantEffect(new KVCommand.Remove(key, raw.get(key).map(v -> (Object) v)));
+                return;
+            }
 
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.Remove(key))), ++slot);
         }

@@ -246,10 +246,18 @@ class TerminationRetirementTest {
         assertThat(store.get(RECORD)).isEqualTo(Option.none());
     }
 
+    /// The transaction the retirement builds for [#GONE]; its absence is an assertion failure, not an empty-option error out of the test body.
+    private KVCommand.LeaderTransaction<AetherKey, AetherValue> theBuiltTransaction() {
+        var built = TerminationRetirement.transactionFor(store, GONE);
+
+        assertThat(built.isPresent()).as("the retirement builds a transaction for the unit it read").isTrue();
+        return built.unwrap();
+    }
+
     @Test
     void aRecordThatMovedAfterTheRead_refusesTheWhole_andTheDirectiveStays() {
         leaderAndBothKeys();
-        var transaction = TerminationRetirement.transactionFor(store, GONE).unwrap();
+        var transaction = theBuiltTransaction();
 
         seed(RECORD, new NodeDepartureValue(DepartureState.ADMITTED, 2L, new ProcessIncarnation(2L, 0xAAL), Option.none(), 20L));
         var results = apply(List.of(transaction));
@@ -262,7 +270,7 @@ class TerminationRetirementTest {
     @Test
     void aDirectiveThatMovedAfterTheRead_refusesTheWhole_andTheRecordStays() {
         leaderAndBothKeys();
-        var transaction = TerminationRetirement.transactionFor(store, GONE).unwrap();
+        var transaction = theBuiltTransaction();
 
         seed(DIRECTIVE, ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000"));
         var results = apply(List.of(transaction));
