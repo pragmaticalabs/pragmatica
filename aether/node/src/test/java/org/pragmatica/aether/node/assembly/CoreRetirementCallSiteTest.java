@@ -125,7 +125,7 @@ class CoreRetirementCallSiteTest {
         when(replacements.retirementProtected()).thenReturn(Set.of());
         when(replacements.voterSwaps()).thenReturn(Map.of());
 
-        var registry = mock(DrainCommandRegistry.class);
+        var registry = mock(DrainCommandRegistry.class, ABSENT_OPTIONS);
         var deferred = new ArrayList<Supplier<ScheduledFuture<?>>>();
         var outputs = TopologyAssembly.topologyManager(new TopologyAssembly.TopologyManagerInputs(config,
                                                                                                   store,
@@ -152,7 +152,8 @@ class CoreRetirementCallSiteTest {
         var task = deferred.getFirst().get();
 
         try {
-            verify(registry, timeout(10_000)).requestDrain(MATURE);
+            verify(registry, timeout(10_000)).requestDrain(MATURE, DrainCommandRegistry.Requester.MANAGER);
+            verify(registry, never()).requestDrain(eq(YOUNG), any(DrainCommandRegistry.Requester.class));
             verify(registry, never()).requestDrain(YOUNG);
         } finally {
             task.cancel(false);

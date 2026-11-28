@@ -30,7 +30,6 @@ import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
-import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -265,6 +264,7 @@ public sealed interface TopologyAssembly {
                                              leaderReconcilerRef::get,
                                              metricsCollector::retainedDispatchedNodes);
         IntSupplier configuredCoreCountSupplier = ctmLiveness.configuredCoreCount();
+        var topologyDrains = TopologyDrains.topologyDrains(drainCommandRegistry);
         var clusterTopologyManager = ClusterTopologyManager.clusterTopologyManager((TopologyObserver) clusterNode.topologyManager(),
                                                                                    lifecycleManager,
                                                                                    config.autoHeal(),
@@ -273,9 +273,8 @@ public sealed interface TopologyAssembly {
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier,
                                                                                    effectivePhaseSupplier,
-                                                                                   DrainSink.synchronous(drainCommandRegistry::requestDrain,
-                                                                                                         fsmDrainRequested(membershipFsmRef)),
-                                                                                   drainCommandRegistry::clearDrain,
+                                                                                   topologyDrains.sink(fsmDrainRequested(membershipFsmRef)),
+                                                                                   topologyDrains::clear,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
                                                                                                           AutoHealStateValue.class),

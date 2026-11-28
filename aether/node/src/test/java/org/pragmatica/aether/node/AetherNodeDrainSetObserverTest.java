@@ -7,15 +7,21 @@ package org.pragmatica.aether.node;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.net.tcp.NodeAddress;
+import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.aether.node.assembly.DrainAssembly;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,6 +35,7 @@ class AetherNodeDrainSetObserverTest {
     private static final NodeId OTHER = NodeId.nodeId("other").unwrap();
     private static final Predicate<NodeId> NOT_READY = _ -> false;
     private static final Predicate<NodeId> READY = _ -> true;
+    private static final Predicate<NodeId> NOT_DEPARTED = _ -> false;
 
     @SuppressWarnings("unchecked")
     private static AlertManager alerts() {
@@ -36,24 +43,38 @@ class AetherNodeDrainSetObserverTest {
     }
 
     private static void record(AlertManager alerts, long nowMs, Set<NodeId> set, Predicate<NodeId> running) {
-        alerts.observeDrainSet(set, SELF, nowMs, running);
+        alerts.observeDrainSet(set, SELF, nowMs, running, NOT_DEPARTED);
     }
 
     @Test
     void drainSet_marksTheCommandedNodeOnAnObserverThatNeverSawDrainRequested() {
         var alerts = alerts();
 
-        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(DRAINED));
+        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, NOT_DEPARTED).accept(Set.of(DRAINED));
 
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
         assertThat(alerts.hasAnnouncedDeparture(OTHER)).as("an uncommanded node stays unmarked: an unplanned kill must alert").isFalse();
     }
 
     @Test
+    void drainSet_marksANodeTheFsmHoldsDeadUntilItsConsumerRan_thenNeverAgain() {
+        var alerts = alerts();
+        var tick = DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, DRAINED::equals);
+
+        tick.accept(Set.of(DRAINED, OTHER));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its DEAD edge may still be in flight: the consumer reads the mark").isTrue();
+        assertThat(alerts.hasAnnouncedDeparture(OTHER)).isTrue();
+
+        alerts.onNodeFailed(DRAINED, SELF);
+        tick.accept(Set.of(DRAINED));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its life is over on this observer: nothing re-creates the mark").isFalse();
+    }
+
+    @Test
     void drainSet_neverMarksSelf() {
         var alerts = alerts();
 
-        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY).accept(Set.of(SELF, DRAINED));
+        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, NOT_DEPARTED).accept(Set.of(SELF, DRAINED));
 
         assertThat(alerts.hasAnnouncedDeparture(SELF)).isFalse();
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
@@ -118,7 +139,7 @@ class AetherNodeDrainSetObserverTest {
     @Test
     void leaderTick_restoresAConsumedMarkWhileTheDrainIsStillCommanded() {
         var alerts = alerts();
-        var tick = DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY);
+        var tick = DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, NOT_DEPARTED);
 
         tick.accept(Set.of(DRAINED));
         alerts.onNodeFailed(DRAINED, SELF);
@@ -182,11 +203,119 @@ class AetherNodeDrainSetObserverTest {
         var alerts = alerts();
         var tick = DrainAssembly.leaderOnlyDrainRecordTick(() -> false,
                                                         () -> Set.of(DRAINED),
-                                                        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY));
+                                                        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, NOT_DEPARTED));
 
         tick.run();
         alerts.onNodeFailed(DRAINED, SELF);
 
         assertThat(alerts.getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// Failure input (d): a node that never reports READY again reaches DEAD. Its tracking entry must go with the DEAD edge;
+    /// `ageOut` alone waits for a READY that a halted node never sends.
+    @Test
+    void nodeThatNeverReportsReady_reachingDead_isNoLongerTracked() {
+        var alerts = alerts();
+
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, NOT_READY, NOT_DEPARTED);
+        assertThat(alerts.trackedDrainNodes()).as("instrument check: the drain record created tracking").isEqualTo(1);
+
+        alerts.onNodeFailed(DRAINED, SELF);
+
+        assertThat(alerts.trackedDrainNodes()).isZero();
+    }
+
+    /// Tracking counts a node that holds only the announced-departure mark (a local `DrainRequested` edge, no broadcast record
+    /// yet): the mark is tracking state too, and its DEAD edge removes it.
+    @Test
+    void trackedDrainNodes_countsANodeHoldingOnlyTheAnnouncedMark() {
+        var alerts = alerts();
+
+        alerts.noteMembershipTransition(DRAINED, "DrainRequested");
+
+        assertThat(alerts.trackedDrainNodes()).isEqualTo(1);
+        alerts.onNodeFailed(DRAINED, SELF);
+        assertThat(alerts.trackedDrainNodes()).isZero();
+    }
+
+    /// Failure input (d), the churn sequence: many drained nodes die without reporting; three drains stay in flight. The
+    /// tracked count is the in-flight drains, never the distinct ids ever seen.
+    @Test
+    void churn_leavesTrackingAtMostTheDrainsInFlight() {
+        var alerts = alerts();
+        var inFlight = Set.of(nodeNamed(0), nodeNamed(1), nodeNamed(2));
+
+        IntStream.range(0, 50).forEach(i -> alerts.observeDrainSet(Set.of(nodeNamed(i)), SELF, i, NOT_READY, NOT_DEPARTED));
+        IntStream.range(3, 50).forEach(i -> alerts.onNodeFailed(nodeNamed(i), SELF));
+
+        assertThat(alerts.trackedDrainNodes()).isLessThanOrEqualTo(inFlight.size());
+        inFlight.forEach(node -> assertThat(alerts.hasAnnouncedDeparture(node)).as("a drain in flight keeps its mark").isTrue());
+    }
+
+    /// A ping that still names the node after this observer's own DEAD edge (the leader clears its registry on its own, later
+    /// edge) must not re-create the mark or its tracking: the departure consumer already ran, so nothing would consume it. The
+    /// observer's FSM holding the node DEAD is what says so (#2315 F4: DEAD is no longer drain-ended evidence for the age-out).
+    @Test
+    void pingNamingTheNodeAfterTheDeadEdge_createsNoMark_whenTheFsmHoldsItDead() {
+        var alerts = alerts();
+        var fsm = fsmHoldingDead(DRAINED);
+        var departed = DrainAssembly.nodeHoldsDeadLife(fsm);
+
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, NOT_READY, NOT_DEPARTED);
+        alerts.onNodeFailed(DRAINED, SELF);
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 1L, NOT_READY, departed);
+
+        assertThat(alerts.trackedDrainNodes()).as("the late ping created nothing").isZero();
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isFalse();
+    }
+
+    /// The other half of the same guard: a node the FSM holds DEAD whose mark is still there (the departure notification has
+    /// not run) keeps it, a ping naming it or not.
+    @Test
+    void markOfADeadNodeWhoseDepartureIsPending_survivesPingsAndTheOmissionGrace() {
+        var alerts = alerts();
+        var fsm = fsmHoldingDead(DRAINED);
+        var departed = DrainAssembly.nodeHoldsDeadLife(fsm);
+        var ended = DrainAssembly.nodeReadyAgain(() -> Map.of()).or(DrainAssembly.nodeUntracked(fsm));
+
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, ended, NOT_DEPARTED);
+        alerts.observeDrainSet(Set.of(DRAINED), SELF, 1L, ended, departed);
+        alerts.observeDrainSet(Set.of(), SELF, 1L + AlertManager.DRAIN_OMISSION_GRACE_MS, ended, departed);
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("pending until the notifier consumes it").isTrue();
+    }
+
+    @Test
+    void nodeUntracked_isTrueOnlyForANodeTheFsmDoesNotTrack() {
+        var fsm = fsmHoldingDead(DRAINED);
+
+        assertThat(DrainAssembly.nodeUntracked(fsm).test(OTHER)).isTrue();
+        assertThat(DrainAssembly.nodeUntracked(fsm).test(DRAINED)).as("a DEAD entry is kept, so it is tracked").isFalse();
+    }
+
+    @Test
+    void nodeDead_isFalseForAMemberAndForAnUnknownNode() {
+        var fsm = fsmHoldingDead(DRAINED);
+
+        assertThat(DrainAssembly.nodeHoldsDeadLife(fsm).test(OTHER)).isFalse();
+        assertThat(DrainAssembly.nodeHoldsDeadLife(fsm).test(DRAINED)).isTrue();
+    }
+
+    private static NodeId nodeNamed(int i) {
+        return NodeId.nodeId("churn-" + i).unwrap();
+    }
+
+    private static MembershipFsm fsmHoldingDead(NodeId node) {
+        var fsm = MembershipFsm.membershipFsm(FsmObserver.noop(),
+                                              System::currentTimeMillis,
+                                              Long.MAX_VALUE,
+                                              TimeSpan.timeSpan(40).millis(),
+                                              TimeSpan.timeSpan(30).seconds(),
+                                              TimeSpan.timeSpan(30).seconds());
+
+        fsm.onMemberDescriptor(NodeInfo.nodeInfo(node, new NodeAddress(node.id(), 6000), Map.of(NodeInfo.LABEL_ROLE, "core")));
+        fsm.onSwimHealthy(node, 1L);
+        fsm.onSwimDeparted(node, 2L);
+        return fsm;
     }
 }

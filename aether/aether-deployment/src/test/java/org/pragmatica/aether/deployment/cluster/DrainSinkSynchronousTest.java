@@ -111,4 +111,16 @@ class DrainSinkSynchronousTest {
 
         assertThat(sink.inFlight(TARGET).isEmpty()).isTrue();
     }
+
+    /// #2315: `release` reaches the holder the three-argument sink was given; the two-argument sink holds nothing and releases nothing.
+    @Test
+    void release_callsTheHolder_whenOneWasGiven_andNothingOtherwise() {
+        var released = new ArrayList<NodeId>();
+
+        DrainSink.synchronous(registryAdds::add, fsmCalls::add, released::add).release(TARGET);
+        sink.release(TARGET);
+
+        assertThat(released).containsExactly(TARGET);
+        assertThat(registryAdds).isEmpty();
+    }
 }

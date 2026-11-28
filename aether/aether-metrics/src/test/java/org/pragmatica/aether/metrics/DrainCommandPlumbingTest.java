@@ -65,8 +65,8 @@ class DrainCommandPlumbingTest {
         void clearDrain_removesTarget() {
             var registry = DrainCommandRegistry.drainCommandRegistry();
 
-            registry.requestDrain(PEER_A);
-            registry.clearDrain(PEER_A);
+            registry.requestDrain(PEER_A)
+                    .onPresent(registry::clearDrain);
             assertThat(registry.isDrainRequested(PEER_A)).isFalse();
             assertThat(registry.drainTargets()).isEmpty();
         }

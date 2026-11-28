@@ -166,6 +166,10 @@ public final class MembershipFsm {
 
     private final FsmObserver<MembershipState, MembershipEvent> observer;
     private final Map<NodeId, MemberTracking> members = new ConcurrentHashMap<>();
+    /// Dispatches in flight per node (#3858 round 2): counted by [`MemberTracking#dispatch`] from before it changes the state until
+    /// every staged hook has run, so a node's DEAD edge is in flight exactly while its count is positive, even after a scope change
+    /// removed its tracking from [`#members`].
+    private final Map<NodeId, Integer> activeDispatches = new ConcurrentHashMap<>();
     /// Raised by [`#close`]; read by [`#retireIfClosed`] so a tracking created after the close is retired at birth.
     private volatile boolean closed = false;
     private final Object scopeGuard = new Object();
@@ -935,6 +939,24 @@ public final class MembershipFsm {
         return snapshot;
     }
 
+    /// Whether this observer holds the node's life as DEAD or still has its DEAD edge in flight (#3858 round 2): the node is tracked
+    /// and `Dead`, or a dispatch for it has not finished running its staged hooks. The state flips to `Dead` BEFORE those hooks run,
+    /// and a scope change can remove the tracking inside that window, so neither the state nor the roster says whether the departure
+    /// notification has been delivered; the dispatch count does. A node that is not held is in a later life, or has none.
+    public boolean holdsDeadLife(NodeId id) {
+        return activeDispatches.containsKey(id) || Option.option(members.get(id))
+                                                         .map(MemberTracking::isDead)
+                                                         .or(false);
+    }
+
+    /// Whether no DEAD edge can come for the node (#3858 round 2): it is not tracked, and no dispatch for it is in flight. A scope
+    /// change retires a tracking under that tracking's own guard before it removes it, so a dispatch that did not start by then never
+    /// will; absence from the roster read first, then a zero count, is therefore proof, and it is the only proof a transport handshake
+    /// may use to end a planned-departure mark.
+    public boolean noDeadEdgePending(NodeId id) {
+        return ! members.containsKey(id) && !activeDispatches.containsKey(id);
+    }
+
     /// FSM-derived health-hint projection for the cluster-quiescence gate
     /// ([`org.pragmatica.aether.deployment.generation.ClusterQuiescenceEvaluator#evaluateCluster`]).
     /// Mirrors the semantics of the SWIM-hints map it replaces: only a downgrade is carried, a
@@ -1551,10 +1573,11 @@ public final class MembershipFsm {
                              .filter(entry -> !eligibility.test(entry.getKey()))
                              .map(Map.Entry::getValue)
                              .toList();
-            retired.forEach(tracking -> members.remove(tracking.id, tracking));
         }
-
-        retired.forEach(MemberTracking::retire);
+        // #3858 round 2: retire BEFORE removing, under the tracking's own guard, outside `scopeGuard` (a dispatch holds its guard
+        // and may read the scope). The roster never shows a node absent while a dispatch of it that began earlier is still running its
+        // hooks on another thread, and a dispatch that has not begun finds the tracking retired.
+        retired.forEach(tracking -> tracking.retireThen(() -> members.remove(tracking.id, tracking)));
 
         return org.pragmatica.lang.Unit.unit();
     }
@@ -1654,7 +1677,8 @@ public final class MembershipFsm {
                                           departureTimeout,
                                           joinGrace,
                                           node -> joinGraceReapEligibility.test(node),
-                                          () -> onePlaneWorkerEviction);
+                                          () -> onePlaneWorkerEviction,
+                                          activeDispatches);
         // M10 (Wave 7): the join-grace reaper — armed on first observation; cancelled on promotion
         // to MEMBER / on death; re-armed on a fenced rejoin (all inside the dispatch chokepoint).
         tracking.armJoinGrace();
@@ -1693,6 +1717,16 @@ public final class MembershipFsm {
                 cancelDepartureTimeout();
                 cancelJoinGrace();
                 cancelRejoinReoffer();
+            }
+        }
+
+        /// [`#retire`], then `removal`, as one section of this tracking's guard: a dispatch of this member on another thread has
+        /// finished (hooks included) before either runs, and one that starts later reads the closed flag.
+        @Contract
+        private void retireThen(Runnable removal) {
+            synchronized (transitionGuard) {
+                retire();
+                removal.run();
             }
         }
 
@@ -1866,6 +1900,8 @@ public final class MembershipFsm {
         /// Final → monitor-free read.
         private final TimeSpan joinGrace;
         private final Predicate<NodeId> joinGraceReapEligibility;
+        /// The owner's dispatch counts ([`MembershipFsm#activeDispatches`]); this tracking counts each dispatch it runs.
+        private final Map<NodeId, Integer> activeDispatches;
 
         private MemberTracking(NodeId id,
                                Fsm<MembershipState, MembershipEvent> fsm,
@@ -1883,7 +1919,9 @@ public final class MembershipFsm {
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
                                Predicate<NodeId> joinGraceReapEligibility,
-                               BooleanSupplier onePlaneEviction) {
+                               BooleanSupplier onePlaneEviction,
+                               Map<NodeId, Integer> activeDispatches) {
+            this.activeDispatches = activeDispatches;
             this.onePlaneEviction = onePlaneEviction;
             this.id = id;
             this.fsm = fsm;
@@ -1963,8 +2001,22 @@ public final class MembershipFsm {
         void dispatch(MembershipEvent event) {
             synchronized (transitionGuard) {
                 if (!retired) {
-                    applyEvent(event).forEach(Runnable::run);
+                    dispatchCounted(event);
                 }
+            }
+        }
+
+        /// The dispatch under the guard, counted in the owner's [`#activeDispatches`] from before the state changes until every
+        /// staged hook has run (#3858 round 2), so a reader of the count sees the DEAD edge in flight for its whole window.
+        private void dispatchCounted(MembershipEvent event) {
+            activeDispatches.merge(id, 1, Integer::sum);
+            try {
+                applyEvent(event).forEach(Runnable::run);
+            } finally {
+                activeDispatches.compute(id,
+                                         (_, count) -> count == 1
+                                                       ? null
+                                                       : count - 1);
             }
         }
 

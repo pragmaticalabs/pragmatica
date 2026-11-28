@@ -3124,7 +3124,8 @@ public interface AetherNode extends ManageableNode {
                                                 quorumLossDetectorRef,
                                                 managementServerRef,
                                                 leaderDeactivation,
-                                                config.self());
+                                                config.self(),
+                                                membershipFsmRef);
 
         TopologyAssembly.placementDrainRoutes(new TopologyAssembly.PlacementDrainRoutesInputs(config,
                                                                                               clusterNode,
@@ -4980,6 +4981,22 @@ public interface AetherNode extends ManageableNode {
                                                                                                    .toLowerCase(java.util.Locale.ROOT)));
     }
 
+    /// The `PeerJoined` route's handler (#3858 round 2, A4): the handshake ends the node's announced-departure marks only when the
+    /// FSM proves that no DEAD edge can still come for it. Package-private so the node tests drive the real wiring with a real FSM.
+    @Contract
+    static Consumer<org.pragmatica.consensus.topology.TransportObservation.PeerJoined> endDepartureMarksOnHandshake(AlertManager alertManager,
+                                                                                                                    AtomicReference<MembershipFsm> membershipFsmRef) {
+        return msg -> alertManager.forgetDepartureMarks(msg.nodeId(), noDeadEdgePendingOf(membershipFsmRef));
+    }
+
+    /// The FSM's proof that no DEAD edge can come for a node (#3858 round 2), read through the deferred holder. Before the FSM is
+    /// installed nothing is proved, so a mark is kept.
+    private static Predicate<NodeId> noDeadEdgePendingOf(AtomicReference<MembershipFsm> membershipFsmRef) {
+        return id -> Option.option(membershipFsmRef.get())
+                           .map(fsm -> fsm.noDeadEdgePending(id))
+                           .or(false);
+    }
+
     private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
                                                                     NodeDeploymentManager nodeDeploymentManager,
                                                                     ClusterDeploymentManager clusterDeploymentManager,
@@ -5020,7 +5037,8 @@ public interface AetherNode extends ManageableNode {
                                                                     AtomicReference<QuorumLossDetector> quorumLossDetectorRef,
                                                                     AtomicReference<Option<ManagementServer>> managementServerRef,
                                                                     LeaderDeactivation leaderDeactivation,
-                                                                    NodeId self) {
+                                                                    NodeId self,
+                                                                    AtomicReference<MembershipFsm> membershipFsmRef) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // #887 E2/E3: every node derives its security overrides from the replicated blueprint. The
         // data was already here (AppBlueprintValue carries ExpandedBlueprint.securityOverrides() to
@@ -5403,12 +5421,13 @@ public interface AetherNode extends ManageableNode {
         // fires for those, but the fresh QUIC handshake produces a TransportObservation.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
                                               eventAggregator::onPeerJoined));
-        // #926: the handshake ends the announced-departure marks. It no longer resolves the node-health
-        // alert (#2061): a handshake from a node the FSM still holds DEAD resolved it with nothing to
-        // re-raise it. The alert is resolved on the FSM's edge into Member (MembershipAssembly), the
-        // same FSM whose DEAD edge raised it.
+        // #926: the handshake ends the announced-departure marks, but only when the FSM proves that no DEAD edge can still come for
+        // the node (#3858 round 2, A4): a handshake from a node the FSM still tracks says nothing about that edge, and a mark dropped
+        // before it turns a planned departure into a CRITICAL alert. It no longer resolves the node-health alert (#2061): a
+        // handshake from a node the FSM still holds DEAD resolved it with nothing to re-raise it. The alert is resolved on the
+        // FSM's edge into Member (MembershipAssembly), the same FSM whose DEAD edge raised it.
         entries.add(MessageRouter.Entry.route(org.pragmatica.consensus.topology.TransportObservation.PeerJoined.class,
-                                              msg -> alertManager.forgetDepartureMarks(msg.nodeId())));
+                                              endDepartureMarksOnHandshake(alertManager, membershipFsmRef)));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         // NODE_LEFT (graceful departures) is sourced from MembershipDecision. NODE_FAILED is NO LONGER
         // sourced here (#210) — it now rides the ungated FSM DEAD edge (membershipFsm.onConfirmedDeparture

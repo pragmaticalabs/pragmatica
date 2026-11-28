@@ -28,6 +28,7 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -215,5 +216,20 @@ class NodeDepartureNotifierTest {
         assertThat(event.details()).containsEntry("subject", DEAD.id());
         assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// #2315: a DEAD state is not drain-ended evidence, so the mark a drain record created for a node that dies never-reachable
+    /// ends here, in the death's own consumer. Without it the mark and its tracking entry outlive the node. Deleting the
+    /// `consumeDepartureMarks` call in [`NodeDepartureNotifier#onNeverJoined`] turns this red.
+    @Test
+    void neverJoined_endsTheMarkAndTheTrackingTheDrainRecordCreated() {
+        var f = Fixture.create();
+        f.alerts().observeDrainSet(Set.of(DEAD), SELF, 0L, _ -> false, _ -> false);
+        assertThat(f.alerts().trackedDrainNodes()).as("control: the drain record created the tracking").isEqualTo(1);
+
+        f.notifier().onNeverJoined(DEAD);
+
+        assertThat(f.alerts().hasAnnouncedDeparture(DEAD)).isFalse();
+        assertThat(f.alerts().trackedDrainNodes()).isZero();
     }
 }

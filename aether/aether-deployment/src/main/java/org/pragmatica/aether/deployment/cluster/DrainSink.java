@@ -9,6 +9,7 @@ import java.util.function.Consumer;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.AttemptCancelled;
 import org.pragmatica.aether.deployment.cluster.FenceFailure.CalledUnderOwnerMonitor;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -25,11 +26,26 @@ public interface DrainSink {
     /// cause on a refused witness.
     Option<Promise<Unit>> inFlight(NodeId target);
 
+    /// The attempt that requested the drain of `target` is over, and the command is not: the sink forgets what it held for the
+    /// attempt (#2315). Called when an attempt ends without a clear of the command (a failed request, an eviction at its gate); the
+    /// sink that holds nothing keeps the default. A clear of the command ends the attempt through `drainCommandClear` instead.
+    @Contract
+    default void release(NodeId target) {}
+
     /// A sink that runs the whole request on the calling thread: it reads [DrainGate#ownerMonitorHeld] at entry and fails with
     /// [FenceFailure.CalledUnderOwnerMonitor], logged at ERROR with the target, if it answers `true`. Otherwise it adds the target
     /// through `registryAdd` under [DrainGate#runIfOwned]; when the gate ran, it calls `fsmCall` and succeeds, else it fails with
     /// [FenceFailure.AttemptCancelled]. It keeps no request in flight.
     static DrainSink synchronous(Consumer<NodeId> registryAdd, Consumer<NodeId> fsmCall) {
+        return synchronous(registryAdd,
+                           fsmCall,
+                           _ -> {});
+    }
+
+    /// [#synchronous(Consumer, Consumer)] whose [#release] calls `registryRelease`: the holder of the ids `registryAdd` took.
+    static DrainSink synchronous(Consumer<NodeId> registryAdd,
+                                 Consumer<NodeId> fsmCall,
+                                 Consumer<NodeId> registryRelease) {
         return new DrainSink() {
             @Override
             public Promise<Unit> request(NodeId target, DrainGate gate) {
@@ -41,6 +57,12 @@ public interface DrainSink {
             @Override
             public Option<Promise<Unit>> inFlight(NodeId target) {
                 return Option.none();
+            }
+
+            @Contract
+            @Override
+            public void release(NodeId target) {
+                registryRelease.accept(target);
             }
         };
     }
