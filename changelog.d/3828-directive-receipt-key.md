@@ -1,7 +1,10 @@
 ### Added (2026-11-27 - #3828: the directive receipt's key type, inert)
 - **New runtime key `DirectiveReceiptKey(NodeId nodeId)`**, wire tag 3120 (`directive-receipt/<node>`): the key the directive receipt will live under. Nothing writes it yet. It is cluster-FSM-only: the worker replica excludes it and the worker projection gives it no scope.
-- **No flag day**: the baseline gains two lines (the key's `SHAPE` and `TAG`) and removes none, so the wire generation is unchanged.
+- **No flag day from the key**: the baseline gains two lines (the key's `SHAPE` and `TAG`) and removes none, so the key alone leaves the wire generation unchanged (the generation moves for the retirement judgement below).
 
 ### Added (2026-11-27 - #3828: the directive receipt's value, inert)
 - **New value `DirectiveReceiptValue(String role)`**, wire tag 3121, `LeaderAuthorized`: the value stored under `DirectiveReceiptKey`; `role` is the role of the directive it was issued with. Nothing writes or reads it yet.
-- **No flag day**: the baseline gains two lines (the value's `SHAPE` and `TAG`) and removes none, so the wire generation is unchanged.
+- **No flag day from the value**: the baseline gains two lines (the value's `SHAPE` and `TAG`) and removes none, so the value alone leaves the wire generation unchanged (the generation moves for the retirement judgement below).
+
+### Changed (2026-11-28 - #3828: wire generation 14 to 15, a semantic break)
+- **`TerminationRetirement` now judges the departure record and the directive it first read by one comparison of epochs** (`RetirementUnit.decide`). Four `SEMANTIC` lines in the baseline declare it: `NodeDepartureValue.process` (same epoch and another process: ends, now removes), `NodeDepartureValue.state` (an ADMITTED record at the epoch first read: removed on the first attempt and ending on a retry, now waits; UNKNOWN: removed, now ends), `NodeDepartureValue.epoch` (record gone and directive unchanged: went on, now ends) and `ActivationDirectiveValue` (a directive moved beside a DEPARTED record: removed, now ends and removes nothing). No TAG, SHAPE or ENUM line moved for these; `WIRE_GENERATION` is bumped from 14 to 15 so a gen-14 leader and a gen-15 leader never judge the same stored value differently in one cluster. Upgrade is stop-the-world. [verified: `scripts/wire-generation-check.sh` against the rc6 merge base, `JoinGenerationGuardTest.thisBinarysGeneration_isFifteenAfterTheTerminationRetirementJudgement`]

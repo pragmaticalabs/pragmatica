@@ -21,7 +21,11 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 14
+GENERATION 15
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.process TerminationRetirement compares epoch and process of the record -> compares the epoch only (same epoch, other process: ends -> removes)
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.state TerminationRetirement removes an ADMITTED or UNKNOWN record at the epoch first read (retry: ends) -> waits on ADMITTED, ends on UNKNOWN
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.epoch TerminationRetirement goes on when the record is gone and the directive is unchanged -> ends, an absent record counting as epoch 0
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue TerminationRetirement removes a directive moved beside a DEPARTED record at the epoch first read -> ends and removes nothing
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
