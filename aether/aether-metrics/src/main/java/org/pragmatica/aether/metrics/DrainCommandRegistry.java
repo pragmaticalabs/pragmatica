@@ -39,8 +39,8 @@ import org.pragmatica.lang.Option;
 /// there is no instant at which a request can join a pin that is being released; that monitor, and the type of the slot, are what
 /// enforce it.
 ///
-/// Thread-safe: every write holds the registry's monitor; the reads (the periodic ping tick via [`#isDrainRequested`] /
-/// [`#drainTargets`]) take no lock and read a `ConcurrentHashMap`. A move writes the released slot before it removes the live one, so
+/// Thread-safe: every write holds the registry's monitor, in a private `synchronized` step behind the public method; the reads
+/// (the periodic ping tick via [`#isDrainRequested`] / [`#drainTargets`]) take no lock and read a `ConcurrentHashMap`. A move writes the released slot before it removes the live one, so
 /// a read sees the command throughout. Every clear removes the exact pin it read (`remove(node, pin)`). Requests are idempotent.
 /// Lock order: the caller's monitors (the topology manager's, the membership FSM's per-member guard) come first, then this one, then
 /// the bound [DrainSubject]'s reads (a per-member monitor of the FSM, a leaf). Nothing here calls out except those two reads.
@@ -110,7 +110,7 @@ public final class DrainCommandRegistry {
     /// `putIfAbsent`), and a restarted process is a new life, which the edge clears end; a replace on a token change would guard only
     /// a token model that does not exist (#3858 F1).
     /// `null` is ignored (no id).
-    public synchronized Option<DrainId> requestDrain(NodeId node, Requester requester) {
+    public Option<DrainId> requestDrain(NodeId node, Requester requester) {
         return Option.option(node)
                      .map(id -> pinDrain(Slot.slot(id, requester)))
                      .map(DrainPin::id);
@@ -119,7 +119,7 @@ public final class DrainCommandRegistry {
     /// Clear the drain named by `id`. A no-op unless `id` is the id of one of the node's current entries: the completion of an
     /// earlier drain, or of another requester's drain, never removes a later one.
     @Contract
-    public synchronized void clearDrain(DrainId id) {
+    public void clearDrain(DrainId id) {
         clearIf(id.node(),
                 pin -> pin.id()
                           .equals(id));
@@ -129,21 +129,21 @@ public final class DrainCommandRegistry {
     /// to the released slot, where no request joins it, and only the node's DEAD edge ends it. A no-op unless `id` is the id of one
     /// of the node's live entries.
     @Contract
-    public synchronized void release(DrainId id) {
-        Slot.liveSlotsOf(id.node()).forEach(slot -> releaseSlot(slot, id));
+    public void release(DrainId id) {
+        releaseLive(id);
     }
 
     /// The life of `node` that reached incarnation `incarnation` ended (the edge into DEAD): clears the entry unless it was
     /// pinned at a later incarnation, which is a drain of a life this edge does not describe.
     @Contract
-    public synchronized void clearEndedLife(NodeId node, long incarnation) {
+    public void clearEndedLife(NodeId node, long incarnation) {
         clearIf(node, pin -> pin.incarnation() <= incarnation);
     }
 
     /// `node` was re-admitted at incarnation `incarnation` (the edge out of DEAD): clears an entry pinned at an earlier
     /// incarnation, i.e. a drain commanded while the node was DEAD. A drain pinned at `incarnation` or later is the new life's.
     @Contract
-    public synchronized void clearPriorLives(NodeId node, long incarnation) {
+    public void clearPriorLives(NodeId node, long incarnation) {
         clearIf(node, pin -> pin.incarnation() < incarnation);
     }
 
@@ -172,7 +172,7 @@ public final class DrainCommandRegistry {
                                .findFirst());
     }
 
-    private DrainPin pinDrain(Slot slot) {
+    private synchronized DrainPin pinDrain(Slot slot) {
         return pins.computeIfAbsent(slot, key -> newPin(key.node()));
     }
 
@@ -180,6 +180,10 @@ public final class DrainCommandRegistry {
         return DrainPin.drainPin(DrainId.drainId(node, sequence.incrementAndGet()),
                                  subject.get().process().applyAsLong(node),
                                  subject.get().incarnation().applyAsLong(node));
+    }
+
+    private synchronized void releaseLive(DrainId id) {
+        Slot.liveSlotsOf(id.node()).forEach(slot -> releaseSlot(slot, id));
     }
 
     private void releaseSlot(Slot slot, DrainId id) {
@@ -194,7 +198,7 @@ public final class DrainCommandRegistry {
         pins.remove(slot, pin);
     }
 
-    private void clearIf(NodeId node, Predicate<DrainPin> refersToEnded) {
+    private synchronized void clearIf(NodeId node, Predicate<DrainPin> refersToEnded) {
         Slot.slotsOf(node).forEach(slot -> clearSlotIf(slot, refersToEnded));
     }
 
