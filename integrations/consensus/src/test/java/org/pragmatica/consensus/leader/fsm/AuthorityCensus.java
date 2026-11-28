@@ -15,7 +15,6 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
 import java.lang.reflect.WildcardType;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -23,7 +22,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.stream.Stream;
+
+import org.pragmatica.testlogging.SourceWalk;
 
 /// The reflective engine of the #3846 authority census (memo r3 section 2.1, item 3). The authority set A is COMPUTED, never
 /// listed: a least fixpoint over types from ANY package, starting at the roots. A type T is in A when it is assignable to a
@@ -76,17 +76,14 @@ final class AuthorityCensus {
     private static List<Class<?>> scannedClasses(Path classesDir, String packagePath) throws IOException, ClassNotFoundException {
         var root = classesDir.resolve(packagePath);
         var classes = new ArrayList<Class<?>>();
-        List<Path> files;
-
-        try (Stream<Path> walk = Files.walk(root)) {
-            files = walk.filter(path -> path.toString()
-                                            .endsWith(".class"))
-                        .filter(path -> !path.getFileName()
-                                             .toString()
-                                             .equals("package-info.class"))
-                        .sorted()
-                        .toList();
-        }
+        var files = SourceWalk.files(root)
+                              .stream()
+                              .filter(path -> path.toString()
+                                                  .endsWith(".class"))
+                              .filter(path -> !path.getFileName()
+                                                   .toString()
+                                                   .equals("package-info.class"))
+                              .toList();
 
         for (var file : files) {
             var relative = classesDir.relativize(file)
