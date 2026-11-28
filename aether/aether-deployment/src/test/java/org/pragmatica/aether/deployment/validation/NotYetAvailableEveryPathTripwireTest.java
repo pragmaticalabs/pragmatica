@@ -112,4 +112,23 @@ class NotYetAvailableEveryPathTripwireTest {
         assertAccepted(EXTERNAL, "plain external");
         assertAccepted(OWNED, "plain owned");
     }
+
+    /// #3865 round 2: the gate reads the policy the way the parse does (trim, lower-case), so every spelling of `until_consumed`
+    /// the consumer reads is refused by `validate` and by `partition`, on the external and the owned branch.
+    @Test
+    void untilConsumed_inAnySpelling_isRefusedByValidateAndPartition_onBothBranches() {
+        Stream.of("UNTIL_CONSUMED", " Until_Consumed ", "until_consumed ")
+              .forEach(spelling -> {
+                  assertRefusedAsNotYetAvailable(EXTERNAL + "[streams.orders.truncation]\npolicy = \"" + spelling + "\"\n");
+                  assertRefusedAsNotYetAvailable(EXTERNAL + "truncation.policy = \"" + spelling + "\"\n");
+                  assertRefusedAsNotYetAvailable(OWNED + "[streams.orders.truncation]\npolicy = \"" + spelling + "\"\n");
+              });
+    }
+
+    /// Control for the spellings: `window` in any spelling stays accepted on both entry points.
+    @Test
+    void windowPolicy_inAnySpelling_isAccepted() {
+        assertAccepted(EXTERNAL + "truncation.policy = \" WINDOW \"\n", "external window");
+        assertAccepted(OWNED + "[streams.orders.truncation]\npolicy = \" Window \"\n", "owned window");
+    }
 }

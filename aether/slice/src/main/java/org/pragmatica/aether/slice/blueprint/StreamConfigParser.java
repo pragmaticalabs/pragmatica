@@ -332,8 +332,10 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(StreamConfigParser::refuseNotYetAvailable)
-                                    .flatMap(_ -> refuseDashedConsumerSections(doc, streamName))
+            var declared = StreamSection.tomlSection(doc, section, streamName);
+
+            return refuseUnknownKeys(declared).flatMap(_ -> refuseDashedConsumerSections(doc, streamName))
+                                    .flatMap(_ -> refuseNotYetAvailable(declared))
                                     .flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
                                                                  source -> parseExternalResource(streamName,
                                                                                                  source,
@@ -503,14 +505,22 @@ public interface StreamConfigParser {
     /// (no accept-and-ignore window), and `expected_ingress` is refused whatever its value until the footprint step (S5).
     /// It is the ONE gate of both branches of a `[streams.<alias>]` section: the owned branch runs it after every other
     /// refusal ([#parseStreamDeclaration]), so a section that is malformed in any other way reports that refusal first; the
-    /// external (`source = ...`) branch runs it right after the unknown-key refusal ([#parseDeclaredResource]), because an
-    /// external alias is never parsed into a [StreamConfig] but still carries these known keys. It reads the section by
-    /// value (not by key listing), so a key supplied by any configuration layer counts. S3 deletes its half of this method
-    /// and its tripwire test; S5 deletes the `expected_ingress` half ([#EXPECTED_INGRESS_KEY]) and its tripwire.
+    /// external (`source = ...`) branch runs it last too, after the unknown-key and dashed-consumer-section refusals
+    /// ([#parseDeclaredResource]), because an external alias is never parsed into a [StreamConfig] but still carries these
+    /// known keys. It reads the section by value (not by key listing), so a key supplied by any configuration layer counts,
+    /// and it reads the policy as the parse does ([#declaredPolicy], one normalisation for the gate and the consumer), so
+    /// `" Until_Consumed "` is refused like `until_consumed`; a policy value the parse cannot read is
+    /// refused as malformed. S3 deletes its half of this method and its tripwire test; S5 deletes the `expected_ingress`
+    /// half ([#EXPECTED_INGRESS_KEY]) and its tripwire.
     private static Result<StreamSection> refuseNotYetAvailable(StreamSection section) {
-        return section.string("truncation.policy")
-                      .filter("until_consumed"::equals)
-                      .isPresent()
+        return declaredPolicy(section).flatMap(policy -> refuseUntilConsumed(section, policy));
+    }
+
+    /// The `until_consumed` half of the gate, decided on the parsed [TruncationPolicy] ([#declaredPolicy], through
+    /// [StreamValues#oneOf]), the value the consumer reads, never on the raw text.
+    private static Result<StreamSection> refuseUntilConsumed(StreamSection section, Option<TruncationPolicy> policy) {
+        return policy.filter(TruncationPolicy.UNTIL_CONSUMED::equals)
+                     .isPresent()
                ? new StreamDeclarationError.NotYetAvailable(section.alias(), "truncation.policy", "S3").result()
                : refuseExpectedIngress(section);
     }

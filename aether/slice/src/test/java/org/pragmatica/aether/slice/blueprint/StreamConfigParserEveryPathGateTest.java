@@ -29,6 +29,7 @@ class StreamConfigParserEveryPathGateTest {
     private static final String OWNED = "[streams.orders]\nversion = \"1.0.0\"\n";
     private static final String UNTIL_CONSUMED = "[streams.orders.truncation]\npolicy = \"until_consumed\"\n";
     private static final String LATEST_GROUP = "[streams.orders.consumers.billing]\nauto_offset_reset = \"latest\"\n";
+    private static final String DASHED_GROUP = "[streams.orders.consumers.billing]\nauto-offset-reset = \"earliest\"\n";
     private static final ReplicationFactors DEFAULTS = ReplicationFactors.BUILT_IN;
 
     /// The three entry points that turn a document into streams, each reduced to the cause it refuses with (none: accepted).
@@ -114,5 +115,49 @@ class StreamConfigParserEveryPathGateTest {
     void plainStreams_areAcceptedOnEveryParseEntry() {
         assertAcceptedOnEveryParseEntry(EXTERNAL, "plain external");
         assertAcceptedOnEveryParseEntry(OWNED, "plain owned");
+    }
+
+    /// #3865 round 2: the gate reads the policy the way the parse does ([StreamValues#oneOf] trims and lower-cases), so a
+    /// spelling the consumer reads as `until_consumed` is refused on both branches, in the sub-table and the dotted form.
+    private static Stream<String> untilConsumedSpellings() {
+        return Stream.of("UNTIL_CONSUMED", " Until_Consumed ", "until_consumed ");
+    }
+
+    @Test
+    void untilConsumed_inAnySpelling_isRefusedOnBothBranches_onEveryParseEntry() {
+        untilConsumedSpellings().forEach(spelling -> {
+            assertRefusedOnEveryParseEntry(EXTERNAL + "[streams.orders.truncation]\npolicy = \"" + spelling + "\"\n",
+                                           "truncation.policy",
+                                           "S3");
+            assertRefusedOnEveryParseEntry(EXTERNAL + "truncation.policy = \"" + spelling + "\"\n", "truncation.policy", "S3");
+            assertRefusedOnEveryParseEntry(OWNED + "[streams.orders.truncation]\npolicy = \"" + spelling + "\"\n",
+                                           "truncation.policy",
+                                           "S3");
+        });
+    }
+
+    /// Control for the spellings: `window` in any spelling is not refused, so the refusal above is the policy and not the key.
+    @Test
+    void windowPolicy_inAnySpelling_isAcceptedOnBothBranches() {
+        assertAcceptedOnEveryParseEntry(EXTERNAL + "truncation.policy = \" WINDOW \"\n", "external window");
+        assertAcceptedOnEveryParseEntry(OWNED + "[streams.orders.truncation]\npolicy = \" Window \"\n", "owned window");
+    }
+
+    /// The gate reads the parsed value: a policy the parse cannot read is refused as malformed on the external branch, as it
+    /// is on the owned one, and is never accepted and ignored.
+    @Test
+    void externalMalformedPolicy_isRefusedAsMalformed_onEveryParseEntry() {
+        assertRefusedOnEveryParseEntry(EXTERNAL + "truncation.policy = \"bogus\"\n", "truncation.policy", "window, until_consumed");
+    }
+
+    /// F4: on the external branch a structural defect (a dashed consumer key) is reported before the not-yet-available
+    /// refusal, as on the owned branch where the gate runs last.
+    @Test
+    void externalDashedConsumerSection_isReportedBeforeNotYetAvailable() {
+        for (var gated : List.of("expected_ingress = \"2MiB/s\"\n", "truncation.policy = \"until_consumed\"\n")) {
+            parseEntries(EXTERNAL + gated + DASHED_GROUP).forEach(cause -> assertThat(cause.map(Cause::message).or("accepted"))
+                                                                                                    .contains("auto-offset-reset")
+                                                                                                    .doesNotContain("not available before release"));
+        }
     }
 }
