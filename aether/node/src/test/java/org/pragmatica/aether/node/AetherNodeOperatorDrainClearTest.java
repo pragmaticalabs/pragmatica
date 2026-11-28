@@ -112,6 +112,52 @@ class AetherNodeOperatorDrainClearTest {
         assertThat(registry.isDrainRequested(DRAINED)).isTrue();
     }
 
+    private static MembershipTransitionRecord transitionAt(NodeId id, String from, String to, long incarnation) {
+        return new MembershipTransitionRecord(id, from, to, "test", incarnation, "core", 0L);
+    }
+
+    /// The edge out of DEAD names the re-admitted incarnation, and a drain pinned at it or later is the new life's. Kills the
+    /// edge passing an unbounded incarnation to the clear (which would end every drain on a re-admission).
+    @Test
+    void edgeOutOfDead_atAnIncarnationNotAbovePinnedOne_keepsTheEntry() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+
+        registry.bindSubject(DrainSubject.drainSubject(_ -> 0L, _ -> 5L));
+        registry.requestDrain(DRAINED);
+
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transitionAt(DRAINED, "Dead", "Member", 5L));
+
+        assertThat(registry.isDrainRequested(DRAINED)).as("pinned at the re-admitted incarnation: the new life's drain").isTrue();
+    }
+
+    /// The same edge at a later incarnation than the pin does clear it (the control for the test above: the edge reaches the clear).
+    @Test
+    void edgeOutOfDead_atAHigherIncarnationThanThePin_clearsTheEntry() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+
+        registry.bindSubject(DrainSubject.drainSubject(_ -> 0L, _ -> 5L));
+        registry.requestDrain(DRAINED);
+
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transitionAt(DRAINED, "Dead", "Member", 6L));
+
+        assertThat(registry.isDrainRequested(DRAINED)).isFalse();
+    }
+
+    /// An edge that is neither into nor out of DEAD ends nothing, even at an incarnation above the pin's: the entry is ended by
+    /// DEAD edges only. Kills the out-of-DEAD branch applying to every other edge.
+    @Test
+    void edgeBetweenLiveStates_atAnIncarnationAboveThePin_keepsTheEntry() {
+        var registry = DrainCommandRegistry.drainCommandRegistry();
+
+        registry.bindSubject(DrainSubject.drainSubject(_ -> 0L, _ -> 1L));
+        registry.requestDrain(DRAINED);
+
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transitionAt(DRAINED, "Member", "Departing", 9L));
+        DrainAssembly.clearOperatorDrainOnDeath(registry, transitionAt(DRAINED, "Departing", "Member", 9L));
+
+        assertThat(registry.isDrainRequested(DRAINED)).isTrue();
+    }
+
     /// The transition listener is assembled inside `AetherNode.assemble`, which no unit test constructs; pin that the hook is
     /// called there with the node's own registry (same stripped-source approach as the death-edge wiring pins).
     @Test

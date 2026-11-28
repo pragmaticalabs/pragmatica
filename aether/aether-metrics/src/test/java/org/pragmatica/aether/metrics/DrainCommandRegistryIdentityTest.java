@@ -118,27 +118,6 @@ class DrainCommandRegistryIdentityTest {
     }
 
     @Test
-    void supersededProcess_clearsAnEntryPinnedToAnotherProcess() {
-        process.set(1);
-        drain(NODE);
-
-        process.set(2);
-        registry.clearSupersededProcess(NODE);
-
-        assertThat(registry.isDrainRequested(NODE)).isFalse();
-    }
-
-    @Test
-    void supersededProcess_keepsAnEntryOfTheSameProcess() {
-        process.set(1);
-        drain(NODE);
-
-        registry.clearSupersededProcess(NODE);
-
-        assertThat(registry.isDrainRequested(NODE)).as("a refuted or withdrawn drain of the same process is still in flight").isTrue();
-    }
-
-    @Test
     void repeatedRequest_withAnUnknownTokenOnEitherSide_isTheSameDrain() {
         process.set(0);
         var bootWindow = drain(NODE);
@@ -149,19 +128,29 @@ class DrainCommandRegistryIdentityTest {
         assertThat(drain(NODE)).as("token lost after the pin").isEqualTo(bootWindow);
     }
 
+    /// The boot window: before a subject is bound every pin carries process `0` and incarnation `0`, which no edge takes as
+    /// evidence of another life. Kills `DrainSubject.unknown()` answering `1` for either.
     @Test
-    void supersededProcess_takesAnUnknownTokenAsNoEvidence() {
-        process.set(0);
-        drain(OTHER);
-        process.set(1);
-        drain(NODE);
+    void unboundRegistry_pinsProcessAndIncarnationZero() {
+        var unbound = DrainCommandRegistry.drainCommandRegistry();
 
-        process.set(0);
-        registry.clearSupersededProcess(NODE);
-        process.set(2);
-        registry.clearSupersededProcess(OTHER);
+        unbound.requestDrain(NODE);
 
-        assertThat(registry.drainTargets()).as("0 on either side is no evidence of another process").containsExactlyInAnyOrder(NODE, OTHER);
+        var pin = unbound.pinOf(NODE).unwrap();
+        assertThat(pin.process()).as("an unknown process is 0, never evidence").isZero();
+        assertThat(pin.incarnation()).as("an unknown incarnation is 0").isZero();
+    }
+
+    /// A drain pinned in the boot window is of incarnation `0`, so the end of any life (incarnation `0` or later) clears it. An
+    /// unknown incarnation pinned as `1` would be refused by an edge naming `0`, and the entry would leak.
+    @Test
+    void unboundRegistry_entryIsClearedByTheEndOfALifeAtIncarnationZero() {
+        var unbound = DrainCommandRegistry.drainCommandRegistry();
+
+        unbound.requestDrain(NODE);
+        unbound.clearEndedLife(NODE, 0);
+
+        assertThat(unbound.isDrainRequested(NODE)).isFalse();
     }
 
     @Test

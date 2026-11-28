@@ -221,6 +221,19 @@ class AetherNodeDrainSetObserverTest {
         assertThat(alerts.trackedDrainNodes()).isZero();
     }
 
+    /// Tracking counts a node that holds only the announced-departure mark (a local `DrainRequested` edge, no broadcast record
+    /// yet): the mark is tracking state too, and its DEAD edge removes it.
+    @Test
+    void trackedDrainNodes_countsANodeHoldingOnlyTheAnnouncedMark() {
+        var alerts = alerts();
+
+        alerts.noteMembershipTransition(DRAINED, "DrainRequested");
+
+        assertThat(alerts.trackedDrainNodes()).isEqualTo(1);
+        alerts.onNodeFailed(DRAINED, SELF);
+        assertThat(alerts.trackedDrainNodes()).isZero();
+    }
+
     /// Failure input (d), the churn sequence: many drained nodes die without reporting; three drains stay in flight. The
     /// tracked count is the in-flight drains, never the distinct ids ever seen.
     @Test

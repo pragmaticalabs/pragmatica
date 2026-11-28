@@ -28,7 +28,7 @@ import org.pragmatica.lang.Option;
 /// incarnation high-water mark, read from the bound [DrainSubject] when the drain is set. A node holds one entry per [Requester]:
 /// the entry is identified by the life of the target process and by who asked, so the operator's drain and the topology manager's
 /// drain of the same process are two entries with two ids, and neither one's clear ends the other. Every clear names the drain it
-/// ends, and the registry refuses the ones that name another: [#clearDrain] by [DrainId], and the three edge clears by the identity
+/// ends, and the registry refuses the ones that name another: [#clearDrain] by [DrainId], and the two edge clears (`clearEndedLife`, `clearPriorLives`) by the identity
 /// the pin holds. A refused clear is a no-op; nothing here is a clock or a count. The invariant: an entry is cleared when, and only when,
 /// the drain that set it is done or withdrawn, and a node that rejoins as a new process never inherits an earlier drain.
 ///
@@ -108,15 +108,6 @@ public final class DrainCommandRegistry {
     @Contract
     public void clearPriorLives(NodeId node, long incarnation) {
         clearIf(node, pin -> pin.incarnation() < incarnation);
-    }
-
-    /// `node` is MEMBER again: clears the entry only when it was pinned to another process than the one the id names now. Same
-    /// process (a refuted or withdrawn drain still in flight) or unknown on either side: the entry stays.
-    @Contract
-    public void clearSupersededProcess(NodeId node) {
-        var current = subject.get().process().applyAsLong(node);
-
-        clearIf(node, pin -> isOtherProcess(pin.process(), current));
     }
 
     /// The pin of `node`'s current entry, if any; the operator's when both requesters hold one.
