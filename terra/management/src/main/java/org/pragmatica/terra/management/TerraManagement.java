@@ -265,8 +265,10 @@ public final class TerraManagement {
     }
 
     private record MediaRange(String type, double quality) {
+        // Total: the limit -1 keeps empty fields, so the split of any text (`;`, `;;`, empty) has a first element and an
+        // unparseable range is a range of type "" that [#produces] matches to nothing (#3724 F1).
         static MediaRange mediaRange(String text) {
-            var parts = text.split(";");
+            var parts = text.split(";", -1);
             var quality = Arrays.stream(parts)
                                 .skip(1)
                                 .map(String::trim)

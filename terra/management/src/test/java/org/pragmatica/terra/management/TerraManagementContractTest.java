@@ -17,7 +17,6 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
@@ -251,28 +250,28 @@ class TerraManagementContractTest {
         return CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     }
 
-    // F1 (#3724 review): an `Accept` whose only range is empty (`;` or `;;`) is a malformed header; it must answer 406
-    // like any other `Accept` that admits neither JSON type. Today MediaRange.mediaRange reads parts[0] of an empty
-    // split and the request answers 500. This ENABLED tripwire pins today's 500; the fix flips it to the
-    // @Disabled test beside it.
+    // F1 (#3724 review): a malformed or empty media range is answered by negotiation, never 500: 406 when nothing in
+    // the header admits a JSON type, the default type when the header is empty.
     @Test
-    void accept_emptyMediaRange_tripwire_answers500Today() throws Exception {
+    void accept_malformedMediaRange_answers406() throws Exception {
         try (var host = TerraManagementHttpTest.Host.start(Map.of(), Map.of())) {
-            for (var accept : List.of(";", ";;")) {
-                assertThat(host.get("/actuator/health", "Accept", accept).statusCode())
-                    .as("F1 tripwire: Accept '" + accept + "' answers 500 today; when MediaRange is fixed, delete this test and enable accept_emptyMediaRange_answers406")
-                    .isEqualTo(500);
+            for (var accept : List.of(";", ";;", "/", "text/", "*/;q=", ",", "text/html,;")) {
+                assertThat(host.get("/actuator/health", "Accept", accept).statusCode()).as("Accept '" + accept + "'").isEqualTo(406);
             }
         }
     }
 
-    @Disabled("F1 (#3724): enable when MediaRange.mediaRange no longer throws on an empty range; delete accept_emptyMediaRange_tripwire_answers500Today with it")
     @Test
-    void accept_emptyMediaRange_answers406() throws Exception {
+    void accept_emptyHeader_answersWithTheDefaultType() throws Exception {
         try (var host = TerraManagementHttpTest.Host.start(Map.of(), Map.of())) {
-            for (var accept : List.of(";", ";;")) {
-                assertThat(host.get("/actuator/health", "Accept", accept).statusCode()).as("Accept '" + accept + "'").isEqualTo(406);
-            }
+            assertThat(host.get("/actuator/health", "Accept", "").statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void accept_malformedRangeBesideAMatch_matches() throws Exception {
+        try (var host = TerraManagementHttpTest.Host.start(Map.of(), Map.of())) {
+            assertThat(host.get("/actuator/health", "Accept", ";, application/json").statusCode()).isEqualTo(200);
         }
     }
 }
