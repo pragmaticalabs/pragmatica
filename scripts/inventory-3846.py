@@ -155,7 +155,7 @@ row("M7d", "3.6 row 7", r"new LeaderElectionContext\(", "integrations", 37, "new
 row("M7e", "3.6 row 7", r"new LeaderElectionContext\(", "test", 36, "new LeaderElectionContext(a);", files=33, memo=34, note="LeaderRunTimeRowsTest adds 1 site in 1 file; lane C1: LeaderEpisodeDispatchTest adds 1 site in 1 file")
 row("M7f", "3.6 row 7", r"FsmTestHarness", "consensus-test", 121, "FsmTestHarness h;", files=30, memo=28, note="the memo counts files: 28; LeaderRunTimeRowsTest adds 11 occurrences in 1 file; lane C1: LeaderEpisodeDispatchTest adds 3 in 1 file")
 row("M8", "3.6 row 8; 5.0", r"claimInbound", "all", 9, "claimInbound();", files=4, memo=9)
-row("M9", "3.6 row 9", r"leaderPreVote\(", "all", 5, "leaderPreVote(a);", files=3, note="PreVote:90 definition, Ctx:765, and the 3 calls in LeaderRunTimeRowsTest (K24 forged pre-vote rows)")
+row("M9", "3.6 row 9", r"leaderPreVote\(", "all", 4, "leaderPreVote(a);", files=3, note="PreVote definition (lane C2: now package-private), Ctx:765, and the 2 calls in LeaderRunTimeRowsTest (K24 forged pre-vote and its twin). Lane C2: 5 -> 4, because the enabled K24 head tripwire (a forged-verdict-acts pin) was deleted when its twin was enabled")
 row("M10", "3.6 row 10; 5.0", r"current\(\)", "leader-main", 13, "x.current();", files=3, memo=12,
     note="13 raw hits; 9 count, 4 do not (Ctx:146, Ctx:1152 the definition, State:1647, and lane C1's fsm.current() in dispatchIfLive, Ctx:1342)")
 row("M10t", "3.6 row 10 tests", r"(?:ctx|context|ctx\(\)|context\(\)|contextOf\([^)]*\))\.current\(\)", "leader-fsm-test", 26, "ctx.current();",
@@ -164,15 +164,16 @@ row("M11", "3.6 row 11", r"dispatchSelf", "main", 14, "dispatchSelf(e);", files=
     note="State:114 definition + 12 calls (13 in State) + 1 doc in Ctx")
 row("M11t", "3.6 row 11 tests", r"dispatchSelf", "test", 8, "dispatchSelf(e);", files=3, memo=8,
     note="LDCT:174, 38, 40, 169, 170, 180; LTSCT:58; OnDrainer:25")
-row("M12", "3.6 row 12", r"dispatchConfined\(", "all", 12, "dispatchConfined(e);", files=5, memo=11, note="8 in main (lane C1: dispatchIfLive calls it, Ctx:1334), 4 in tests")
+row("M12", "3.6 row 12", r"dispatchConfined\(", "all", 11, "dispatchConfined(e);", files=4, note="7 in main, 4 in tests. Lane C2: 12 -> 11 and 5 -> 4 files, because PreVote:281 (the verdict) no longer calls dispatchConfined: it dispatches through the suspicion handle (dispatchIfLive calls it, Ctx:1334), so the PreVote file left the row. Equals the memo's 11 again")
 row("M13", "3.6 row 13", r"unentered\(", "all", 7, "unentered();", files=4, note="lane C1: LeaderEpisodeDispatchTest.isCurrent_isFalseForAHandleOverAnEndedLifetime... adds 1 test site")
-row("M14", "3.6 row 14", r"episodeOf\(", "all", 7, "episodeOf(a);", files=4)
+row("M14", "3.6 row 14", r"episodeOf\(", "all", 3, "episodeOf(a);", files=1,
+    note="lane C2: 7 -> 3 and 4 -> 1 files. Ctx.episodeOf(EpisodeIdentity) became suspicionEpisode(Suspicion): its definition, the 2 PreVote calls and the LEHFT:170 call are gone. The 3 left are LeaderElectionState's own private static episodeOf (declaration + 2 calls), lane St's")
 row("M15a", "3.6 row 15; 5.0", r"episodeHandle", "all", 10, "episodeHandle();", files=1, memo=10)
 row("M15b", "3.6 row 15", r"new (?:\w+\.)*(?:Electing|ReElecting|AwaitingKvSync)\(", "all", 3, "new Electing(a);", files=1)
 row("M16", "3.6 row 16", r"new TransitionRequest", "all", 1, "new TransitionRequest(a);", files=1)
 row("M18", "3.6 row 18", r"rescheduleCurrentTick|electLocallyOnTick", "test", 0, "rescheduleCurrentTick();")
-row("M19", "3.6 row 19", r"refusedDispatchesForTest|handlerEpisode|suspicionEpisode", "integrations", 18, "handlerEpisode();",
-    note="the new members: 0 before lane C1; C1 adds the Ctx definitions and docs and 10 test rows (LeaderEpisodeDispatchTest); lane St adds the nine handler calls")
+row("M19", "3.6 row 19", r"refusedDispatchesForTest|handlerEpisode|suspicionEpisode", "integrations", 25, "handlerEpisode();",
+    note="the new members: 0 before lane C1; C1 adds the Ctx definitions and docs and 10 test rows (LeaderEpisodeDispatchTest); lane C2 18 -> 25: +5 suspicionEpisode (Ctx definition, 3 PreVote sites: openRound, refrain, verdict; LEHFT:170) and +2 refusedDispatchesForTest in the enabled K24 row (instrument baseline + assertion); lane St adds the nine handler calls")
 row("W1", "P9", r"ClusterFsmRouter\.wire\(", ("all", r"/src/test/"), 0, "ClusterFsmRouter.wire(a);", note="main callers: 0")
 row("W2", "P9", r"ClusterFsmRouter\.wire\(", "test", 3, "ClusterFsmRouter.wire(a);", files=2, note="its 3 callers are tests")
 row("L1", "5.0, S3", r"\.end\(\)", "leader-main", 0, "x.end();")

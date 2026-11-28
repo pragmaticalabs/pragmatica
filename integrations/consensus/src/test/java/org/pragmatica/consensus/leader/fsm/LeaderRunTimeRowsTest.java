@@ -179,36 +179,11 @@ class LeaderRunTimeRowsTest {
     // ---------------------------------------------------------------------------------------------------------------
     // Group 2: K24 (forged pre-vote over the node's ctx) and K24b (the installed pre-vote).
     // ---------------------------------------------------------------------------------------------------------------
-    /// ENABLED tripwire (flipped in lane C): a pre-vote the node did NOT install (`LeaderPreVote.leaderPreVote(ctx, ...)` is
-    /// public) reaches a doubting majority on the drainer; its `LeaderDoubtConfirmed` is admitted and `Led` leaves for
-    /// `ReElecting`. The leader is suspected through the public `removeFromView`, which dispatches nothing, so the only
-    /// thing that can end the tenure here is the forged verdict (the instrument line below pins that `Led` still stands
+    /// K24 (INV-E anchor): a pre-vote the node did NOT install (`LeaderPreVote.leaderPreVote(ctx, ...)`, package-private) mints
+    /// Suspicions that are never live, so its `LeaderDoubtConfirmed` is refused and counted and `Led` stays. The leader is
+    /// suspected through the public `removeFromView`, which dispatches nothing, so the only thing that could end the tenure
+    /// here is the forged verdict (the instrument lines pin that no pre-vote is installed and that `Led` still stands
     /// before the forged round).
-    @Test
-    void k24_forgedPreVoteOverTheNodesCtx_atHead_ledLeaves() {
-        var h = ledUnderPeerA(MessageRouter.mutable());
-
-        try {
-            var ctx = h.state().ctx();
-            var forged = LeaderPreVote.leaderPreVote(ctx, LONG);
-
-            assertThat(ctx.preVote().isEmpty()).as("instrument: the node installed no pre-vote, the verdict is the forged one's")
-                      .isTrue();
-            assertThat(ctx.removeFromView(PEER_A)).as("instrument: the leader left the stored view").isTrue();
-            assertThat(h.state()).as("instrument: a removal through removeFromView alone leaves Led standing")
-                      .isInstanceOf(LeaderElectionState.Led.class);
-            roundWithDoubtingMajorityOnDrainer(ctx, forged);
-            assertThat(h.state()).as("K24 no longer acts: lane C refuses a verdict from a pre-vote the context did not install. "
-                                    + "Enable k24_forgedPreVoteOverTheNodesCtx_underInvE_isRefusedAndLedStays and delete this method")
-                      .isInstanceOf(LeaderElectionState.ReElecting.class);
-        } finally {
-            shutdown(h);
-        }
-    }
-
-    /// The rule, `@Disabled` until lane C: the forged verdict is refused and `Led` stays. Lane C adds the
-    /// `refusedDispatches` + 1 assertion (a lane C counter that does not exist at this head).
-    @Disabled("lane C: enable when a verdict from a pre-vote the context did not install is refused (K24)")
     @Test
     void k24_forgedPreVoteOverTheNodesCtx_underInvE_isRefusedAndLedStays() {
         var h = ledUnderPeerA(MessageRouter.mutable());
@@ -217,10 +192,18 @@ class LeaderRunTimeRowsTest {
             var ctx = h.state().ctx();
             var forged = LeaderPreVote.leaderPreVote(ctx, LONG);
 
-            ctx.removeFromView(PEER_A);
+            var refusedBefore = ctx.refusedDispatchesForTest();
+
+            assertThat(ctx.preVote().isEmpty()).as("instrument: the node installed no pre-vote, the verdict is the forged one's")
+                      .isTrue();
+            assertThat(ctx.removeFromView(PEER_A)).as("instrument: the leader left the stored view").isTrue();
+            assertThat(h.state()).as("instrument: a removal through removeFromView alone leaves Led standing")
+                      .isInstanceOf(LeaderElectionState.Led.class);
             roundWithDoubtingMajorityOnDrainer(ctx, forged);
             assertThat(h.state()).as("the forged verdict was refused: Led stays")
                       .isInstanceOf(LeaderElectionState.Led.class);
+            assertThat(ctx.refusedDispatchesForTest()).as("the refusal is counted: one forged verdict, one refused dispatch")
+                                                      .isEqualTo(refusedBefore + 1);
         } finally {
             shutdown(h);
         }

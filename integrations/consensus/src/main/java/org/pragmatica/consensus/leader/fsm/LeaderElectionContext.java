@@ -1296,11 +1296,11 @@ public final class LeaderElectionContext {
         return handleOver(Option.option(tx).<EpisodeIdentity> map(request -> new Entry(request.lifetime())));
     }
 
-    /// The handle of a source that is not a state: `identity` is that source's own identity (the pre-vote's suspicion
-    /// episode). A missing (`null`) identity is refused by [#handleOver] (C4): a named check, not a `NullPointerException`
-    /// that the executor happens to absorb.
-    EpisodeHandle episodeOf(EpisodeIdentity identity) {
-        return handleOver(Option.option(identity));
+    /// The handle of the pre-vote's suspicion episode: `suspicion` is that source's own identity, which only
+    /// [LeaderPreVote] builds. A missing (`null`) suspicion is refused by [#handleOver] (C4): a named check, not a
+    /// `NullPointerException` that the executor happens to absorb.
+    EpisodeHandle suspicionEpisode(LeaderPreVote.Suspicion suspicion) {
+        return handleOver(Option.<EpisodeIdentity> option(suspicion));
     }
 
     /// The handle of a state that was never entered: nothing it arms can run.

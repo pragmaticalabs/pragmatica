@@ -130,8 +130,7 @@ class LeaderAuthorityCensusTest {
         "CEN-2 LeaderManager.FsmBackedLeaderManager.inbound()",
         "CEN-3 LeaderElectionContext.claimInbound: public",
         "CEN-3 LeaderElectionContext.dispatchConfined: package-private",
-        "CEN-3 LeaderElectionState.dispatchSelf: private static",
-        "CEN-3 LeaderPreVote.leaderPreVote: public static");
+        "CEN-3 LeaderElectionState.dispatchSelf: private static");
 
     @Test
     void census_atHead_matchesTheCommittedRatchet() throws Exception {

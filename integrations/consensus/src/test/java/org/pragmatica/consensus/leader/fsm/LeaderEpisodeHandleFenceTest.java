@@ -20,7 +20,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeIdentity;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -168,7 +167,7 @@ class LeaderEpisodeHandleFenceTest {
 
         start();
         serialLog = LogCapture.capture(SERIAL_LOGGER, Level.ERROR, true);
-        ctx.episodeOf((EpisodeIdentity) null)
+        ctx.suspicionEpisode((LeaderPreVote.Suspicion) null)
            .serialized(ran::incrementAndGet)
            .run();
         OnDrainer.drained(ctx);
