@@ -281,6 +281,15 @@ final class MbWorld {
         return this;
     }
 
+    /// Activate, then deliver the first seam sample (what `SeamPoller.start` does right after a `Rebuild`): the model has then taken a
+    /// sample after the `Rebuild` snapshot, the bar a genuinely empty placement audience must clear before it is told (#3870).
+    MbWorld activateSampled() {
+        h.activate();
+        h.deliver(new ClusterInput.SeamsRefreshed(h.seams));
+
+        return this;
+    }
+
     /// Activate with a DEPARTED worker record still carrying its directive: since #3193 C17b retires that directive, so the state
     /// exists only until C17b commits. Only the CLEANUP submission is lost here, which models the join arriving first.
     MbWorld activateBeforeC17b() {

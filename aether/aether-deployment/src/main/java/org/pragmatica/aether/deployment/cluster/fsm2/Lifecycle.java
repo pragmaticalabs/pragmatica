@@ -196,13 +196,14 @@ public sealed interface Lifecycle {
     /// A fresh sample of the read seams. The counting set may have changed, and so may every absence judgment.
     static ClusterModel onSeams(ClusterModel m, Ctx ctx, Seams seams) {
         var before = m.seams;
+        var firstSample = !m.sampledAfterRebuild;
 
         m.seams = seams;
         m.sampledAfterRebuild = true;
         Liveness.refresh(m, ctx);
         Absence.refreshAll(m, ctx);
-        if (!before.countedCores().equals(seams.countedCores()) || !before.ready().equals(seams.ready()) || !before.draining()
-                                                                                                                   .equals(seams.draining())) {
+        if (firstSample || !before.countedCores().equals(seams.countedCores()) || !before.ready().equals(seams.ready()) || !before.draining()
+                                                                                                                                  .equals(seams.draining())) {
             Reconcile.request(m, ctx);
         }
 
