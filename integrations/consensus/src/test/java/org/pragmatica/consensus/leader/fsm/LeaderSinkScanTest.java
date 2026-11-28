@@ -41,7 +41,8 @@ class LeaderSinkScanTest {
     /// followUpIfLive. Entries leave with lanes C, St and F.
     /// Lane C2 adds `LeaderPreVote.verdict > dispatch`: the scan reads call names, and that call is `EpisodeHandle.dispatch` (the
     /// suspicion handle's own route, which reaches the FSM only through `dispatchIfLive`, a WRAPPER_SET row), not `Fsm.dispatch`.
-    /// Lane St's handler calls through `handlerEpisode(tx)` are the same shape and join this set the same way.
+    /// Lane St's calls through the episode in scope (`handlerEpisode(tx)`, `entryEpisode`) are the same shape and joined this set the
+    /// same way: the ten `LeaderElectionState` rows are `EpisodeHandle.dispatch`, which reaches the FSM only through `dispatchIfLive`.
     private static final Map<String, Integer> SINK_SET = Map.ofEntries(Map.entry(CTX_KEY + "EpisodeHandle.serialized > execute", 2),
                                                                        Map.entry(CTX_KEY + "Inbound.serially > execute", 1),
                                                                        Map.entry(CTX_KEY + "Inbound.stop > execute", 1),
@@ -53,24 +54,23 @@ class LeaderSinkScanTest {
                                                                        Map.entry(STATE_KEY + "QuorumWaiting.advanceOrPoll > followUp", 1),
                                                                        Map.entry(STATE_KEY + "QuorumWaiting.onEntered > followUp", 1),
                                                                        Map.entry(STATE_KEY + "followUpKvLeader > followUp", 1),
-                                                                       Map.entry("LeaderPreVote.java:LeaderPreVote.verdict > dispatch", 1));
+                                                                       Map.entry("LeaderPreVote.java:LeaderPreVote.verdict > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "AwaitingKvSync.armGraceTimer > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "adoptLeaderFromKvIfPresent > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "checkLeaderLease > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "electLocallyOnTick > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "holdLeaderToView > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "pollConsensusAndKv > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "rearmGrace > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "scheduleElectionTickInto > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "scheduleStaircaseFirstTick > dispatch", 1),
+                                                                       Map.entry(STATE_KEY + "sendProposal > dispatch", 3));
 
     /// The in-leader wrappers that reach `Fsm.dispatch` (memo S1(b)); lanes C, St and F delete them one by one (lane C1 adds `dispatchIfLive`, the handle's own route, INV-E P3).
     private static final Map<String, Integer> WRAPPER_SET = Map.ofEntries(Map.entry(CTX_KEY + "dispatchTransportView > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "shutdownInOrder > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "dispatchIfLive > dispatchConfined", 1),
-                                                                          Map.entry(CTX_KEY + "submitInOrder > dispatchConfined", 2),
-                                                                          Map.entry(STATE_KEY + "dispatchSelf > dispatchConfined", 1),
-                                                                          Map.entry(STATE_KEY + "AwaitingKvSync.armGraceTimer > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "adoptLeaderFromKvIfPresent > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "checkLeaderLease > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "electLocallyOnTick > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "holdLeaderToView > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "pollConsensusAndKv > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "rearmGrace > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "scheduleElectionTickInto > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "scheduleStaircaseFirstTick > dispatchSelf", 1),
-                                                                          Map.entry(STATE_KEY + "sendProposal > dispatchSelf", 3));
+                                                                          Map.entry(CTX_KEY + "submitInOrder > dispatchConfined", 2));
 
     /// NOT CLAIMED: calls out of the drainer into unreadable code. The router delivers to subscribers (listeners) and the
     /// react executor runs its task on whatever executor the host installed (default: inline, so a hook re-enters there).

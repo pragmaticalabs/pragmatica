@@ -68,13 +68,14 @@ class LeaderTxFreeArmTripwireTest {
 
         try {
             var led = seededLed(ctx);
+            var nullMintsBefore = ctx.refusedNullIdentitiesForTest();
 
             inbound(ctx).serially(() -> led.handle(new PeerRemovedFromView(PEER), null));
 
             assertThat(ctx.current()).as("the refused LeaderOutOfView never reached the FSM: Led stays")
                                      .isInstanceOf(LeaderElectionState.Led.class);
-            assertThat(ctx.refusedNullIdentitiesForTest()).as("the null transition request mints NEVER and counts")
-                                                          .isEqualTo(1);
+            assertThat(ctx.refusedNullIdentitiesForTest() - nullMintsBefore).as("the null transition request mints NEVER and counts")
+                                                                            .isEqualTo(1);
             assertThat(ctx.refusedDispatchesForTest()).as("the dispatch of the NEVER handle is refused and counted")
                                                       .isEqualTo(1);
         } finally {

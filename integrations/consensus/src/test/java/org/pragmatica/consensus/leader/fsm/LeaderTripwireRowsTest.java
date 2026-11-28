@@ -62,7 +62,8 @@ class LeaderTripwireRowsTest {
         TripwireRow.row("K17", "St", HEAD,
                         "static " + STATE + " arm(LeaderElectionContext ctx, LeaderElectionContext.EpisodeHandle handle) { return new " + STATE
                         + ".Electing(ctx, 0L, new " + ATOMIC + "<>(), new " + ATOMIC + "<>(), new " + ATOMIC + "<>(), new " + ATOMIC + "<>(handle)); }",
-                        CONTROL_CURRENT, "constructor Electing in record Electing cannot be applied to given types")
+                        CONTROL_CURRENT, "constructor Electing in record", "cannot be applied to given types",
+                        "actual and formal argument lists differ in length")
                   .requiredLineMustNotMention("EpisodeHandle"),
         TripwireRow.row("O01", "St", HEAD,
                         "static Object arm(" + STATE + ".AwaitingKvSync a, " + STATE + ".Electing e, " + STATE + ".ReElecting r) { return java.util.List.of(a.episodeHandle(), e.episodeHandle(), r.episodeHandle()); }",
