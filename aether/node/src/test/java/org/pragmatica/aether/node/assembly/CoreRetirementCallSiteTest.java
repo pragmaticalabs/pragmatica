@@ -152,7 +152,8 @@ class CoreRetirementCallSiteTest {
         var task = deferred.getFirst().get();
 
         try {
-            verify(registry, timeout(10_000)).requestDrain(MATURE);
+            verify(registry, timeout(10_000)).requestDrain(MATURE, DrainCommandRegistry.Requester.MANAGER);
+            verify(registry, never()).requestDrain(eq(YOUNG), any(DrainCommandRegistry.Requester.class));
             verify(registry, never()).requestDrain(YOUNG);
         } finally {
             task.cancel(false);
