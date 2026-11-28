@@ -83,16 +83,22 @@ class TerminationRetirementTest {
     });
     private final List<List<KVCommand<AetherKey>>> submitted = new ArrayList<>();
 
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private List<Object> apply(List<KVCommand<AetherKey>> commands) {
         ReceiptInertness.assertInert(commands);
         submitted.add(commands);
 
+        return process(commands);
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private List<Object> process(List<KVCommand<AetherKey>> commands) {
         return ((KVStore) store).process(((KVStore) store).createBatch((List) commands));
     }
 
+    /// A fixture write: it goes straight to the store, never through `apply`, so the receipt inertness check (which guards what production
+    /// submits) does not see the receipts the tests seed.
     private void commit(KVCommand<AetherKey> command) {
-        apply(List.of(command));
+        process(List.of(command));
         submitted.clear();
     }
 
