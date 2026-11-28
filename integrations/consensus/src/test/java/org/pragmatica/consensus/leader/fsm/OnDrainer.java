@@ -6,7 +6,7 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
-import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;

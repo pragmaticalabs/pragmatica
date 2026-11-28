@@ -40,7 +40,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import static org.pragmatica.consensus.fsm.Observations.seq;
-import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
 import static org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted.leaderCommitted;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;

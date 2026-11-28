@@ -7,7 +7,7 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
-import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;

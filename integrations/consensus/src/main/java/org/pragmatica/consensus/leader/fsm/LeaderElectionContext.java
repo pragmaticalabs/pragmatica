@@ -1421,7 +1421,7 @@ public final class LeaderElectionContext {
 
     /// The one [Inbound] of this context: the first claim is granted, every later one is not. The builder of the context
     /// claims it before any FSM code runs, so FSM code can only ever hold a refused one.
-    public Inbound claimInbound() {
+    Inbound claimInbound() {
         return new Inbound(inboundClaimed.compareAndSet(false, true));
     }
 

@@ -147,12 +147,6 @@ class LeaderTripwireRowsTest {
     }
 
     @ParameterizedTest
-    @MethodSource("laneCRows")
-    void tripwireLaneC_atHead_compiles(TripwireRow row) throws Exception {
-        assertCompilesAtHead(row, "tripwireLaneC_underInvE_doesNotCompile");
-    }
-
-    @ParameterizedTest
     @MethodSource("laneMRows")
     void tripwireLaneM_atHead_compiles(TripwireRow row) throws Exception {
         assertCompilesAtHead(row, "tripwireLaneM_underInvE_doesNotCompile");
@@ -173,7 +167,6 @@ class LeaderTripwireRowsTest {
         assertRefusedUnderInvE(row);
     }
 
-    @Disabled("lane C: enable when claimInbound is package-private (O08)")
     @ParameterizedTest
     @MethodSource("laneCRows")
     void tripwireLaneC_underInvE_doesNotCompile(TripwireRow row) throws Exception {

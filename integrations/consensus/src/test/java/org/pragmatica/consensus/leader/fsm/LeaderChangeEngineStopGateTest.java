@@ -7,7 +7,7 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
-import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
 
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;

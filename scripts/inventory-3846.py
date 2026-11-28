@@ -174,6 +174,9 @@ row("M16", "3.6 row 16", r"new TransitionRequest", "all", 1, "new TransitionRequ
 row("M18", "3.6 row 18", r"rescheduleCurrentTick|electLocallyOnTick", "test", 0, "rescheduleCurrentTick();")
 row("M19", "3.6 row 19", r"refusedDispatchesForTest|handlerEpisode|suspicionEpisode", "integrations", 25, "handlerEpisode();",
     note="the new members: 0 before lane C1; C1 adds the Ctx definitions and docs and 10 test rows (LeaderEpisodeDispatchTest); lane C2 18 -> 25: +5 suspicionEpisode (Ctx definition, 3 PreVote sites: openRound, refrain, verdict; LEHFT:170) and +2 refusedDispatchesForTest in the enabled K24 row (instrument baseline + assertion); lane St adds the nine handler calls")
+row("M23", "3.6 seam (C2)", r"leader\.fsm\.LeaderInboundForTest\.inbound;", "all", 23, "import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;", files=23, memo=22,
+    note="lane C2 moved LeaderInboundForTest from leader to leader.fsm (claimInbound is package-private): the users' static imports. Memo 22 -> 24 users at the head (LeaderRunTimeRowsTest and LeaderTxFreeArmTripwireTest came after 0d050934ea); the row measures 23 because LeaderTxFreeArmTripwireTest is a SCAN_SOURCE, excluded from every space")
+row("M23o", "3.6 seam (C2)", r"consensus\.leader\.LeaderInboundForTest", "all", 0, "import org.pragmatica.consensus.leader.LeaderInboundForTest;", note="the old package: no reference left")
 row("W1", "P9", r"ClusterFsmRouter\.wire\(", ("all", r"/src/test/"), 0, "ClusterFsmRouter.wire(a);", note="main callers: 0")
 row("W2", "P9", r"ClusterFsmRouter\.wire\(", "test", 3, "ClusterFsmRouter.wire(a);", files=2, note="its 3 callers are tests")
 row("L1", "5.0, S3", r"\.end\(\)", "leader-main", 0, "x.end();")

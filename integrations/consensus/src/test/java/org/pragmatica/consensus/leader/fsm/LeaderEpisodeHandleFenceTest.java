@@ -29,7 +29,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.consensus.leader.LeaderInboundForTest.inbound;
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
 import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 
 /// #3846 round 2: the findings of v3855c (C1-C4) and the stale handle, as deterministic behaviour rows (latches, no
