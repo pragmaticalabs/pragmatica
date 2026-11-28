@@ -31,20 +31,42 @@ class DrainCommandRegistryIdentityTest {
         return registry.requestDrain(node).unwrap();
     }
 
-    /// Failure input (c): the completion of an earlier drain arrives after a newer drain of the same node began.
+    /// A released drain is a command its attempt left to the DEAD edge: the next request is a new drain, and the clear of that
+    /// drain leaves the released command standing.
     @Test
-    void completionOfAnOlderDrain_afterANewerDrainStarted_leavesTheNewerEntry() {
-        process.set(1);
-        var older = drain(NODE);
+    void releasedDrain_isNeverJoined_andSurvivesTheClearOfTheNextDrain() {
+        var released = drain(NODE);
+        registry.release(released);
 
-        process.set(2);
-        var newer = drain(NODE);
-        assertThat(newer).as("a request for another process is a new drain").isNotEqualTo(older);
+        var next = drain(NODE);
+        assertThat(next).as("a released command is not joined").isNotEqualTo(released);
 
-        registry.clearDrain(older);
+        registry.clearDrain(next);
 
-        assertThat(registry.isDrainRequested(NODE)).as("the older id is refused at the boundary").isTrue();
-        assertThat(registry.pinOf(NODE).unwrap().id()).isEqualTo(newer);
+        assertThat(registry.isDrainRequested(NODE)).as("the released command stands until the DEAD edge").isTrue();
+        assertThat(registry.drainTargets()).containsExactly(NODE);
+    }
+
+    @Test
+    void releasedDrain_endsAtTheEdgeClears() {
+        incarnation.set(5);
+        registry.release(drain(NODE));
+
+        registry.clearPriorLives(NODE, 5);
+        assertThat(registry.isDrainRequested(NODE)).as("a drain of the new life's incarnation is not a prior life's").isTrue();
+
+        registry.clearEndedLife(NODE, 5);
+
+        assertThat(registry.isDrainRequested(NODE)).as("the DEAD edge of its life ends it").isFalse();
+    }
+
+    @Test
+    void release_byAnIdThatIsNotLive_isANoOp() {
+        var live = drain(NODE);
+
+        registry.release(DrainId.drainId(NODE, 999L));
+
+        assertThat(drain(NODE)).as("the live drain is still joined").isEqualTo(live);
     }
 
     @Test

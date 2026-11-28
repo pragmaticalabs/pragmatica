@@ -48,7 +48,6 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.pragmatica.consensus.NodeId.nodeId;
@@ -63,12 +62,12 @@ import static org.awaitility.Awaitility.await;
 /// The harness drives the events in PRODUCTION ORDER, through the real `ClusterTopologyManager` over the real `TopologyDrains` and
 /// `DrainCommandRegistry`, wired as `TopologyAssembly` wires them (`drains.sink`, `drains::clear`): a rejoin of a retired identity
 /// is the EVICTION (`evict`, the gate, `endAttempt` by release); `drainNode` of the same, still-live process is the later DRAIN
-/// attempt (`pinDrain` hands it the eviction's id); then each end that clears by id (grace expiry whose reap does not run, cancel on
+/// attempt (the registry hands it a new pin, not the eviction's); then each end that clears by id (grace expiry whose reap does not run, cancel on
 /// rejoin, deactivation).
 ///
-/// Each failing input is two tests: an ENABLED tripwire asserting today's behaviour (the eviction's command is gone while the
-/// process lives; it goes red when that changes and its message says what to enable), and the real assertion, `@Disabled` for lane B.
-/// A test without a `@Disabled` twin is a control.
+/// Each failing input asserts that the eviction's command (or the command a failed attempt left) survives the end of the later
+/// attempt while the process lives; the control asserts that an attempt with no earlier command still clears its own, and the DEAD
+/// edge test asserts that the surviving command still ends there.
 ///
 /// Sites of the #3858 round 2 enumeration that no test in this class names, and why none can break the invariant [reading]:
 /// - G2, O1, O2 (the OPERATOR slot's set): the slot has no attempt end; only the DEAD or rejoin edge clears it (O3 -> G4). The shared
@@ -88,7 +87,6 @@ class DrainEntryOwnershipTest {
     private static final HlcTimestamp HLC = new HlcTimestamp(HlcTimestamp.pack(1L, 0), SELF);
     private static final String EVICTED = OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED.code();
     private static final String CANCELLED = OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED.code();
-    private static final String LANE_B = "#3858 round 2 lane B";
 
     private final DrainCommandRegistry registry = DrainCommandRegistry.drainCommandRegistry();
     private final TopologyDrains drains = TopologyDrains.topologyDrains(registry);
@@ -122,7 +120,7 @@ class DrainEntryOwnershipTest {
         ctm.onWorkerJoin(WorkerJoinDecision.workerJoinDecision(TARGET, "worker", HLC));
     }
 
-    /// The eviction, then the later manager DRAIN attempt of the same live process, which shares the eviction's pin.
+    /// The eviction, then the later manager DRAIN attempt of the same live process, which owns a pin of its own.
     private void evictThenDrain() {
         join();
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(EVICTED));
@@ -131,12 +129,8 @@ class DrainEntryOwnershipTest {
         assertThat(evictionsPin).as("instrument: the eviction's command is set").hasSize(1);
         assertThat(drains.held()).as("instrument: the eviction's attempt ended by release").isZero();
         assertThat(ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND).await().isSuccess()).as("instrument: the DRAIN attempt was accepted").isTrue();
-        assertThat(pins()).as("instrument: the DRAIN attempt owns the eviction's pin (same id)").isEqualTo(evictionsPin);
+        assertThat(pins()).as("instrument: the DRAIN attempt owns a new pin, not the eviction's").isNotEqualTo(evictionsPin);
         assertThat(drains.held()).as("instrument: the DRAIN attempt holds the id").isEqualTo(1);
-    }
-
-    private static String fixed(String path, String realTest) {
-        return "#3858 round 2 E1 (" + path + ") is fixed: delete this tripwire and enable " + realTest;
     }
 
     // ---- E1 through grace expiry whose reap does not run (M6 `reapOwned` clears at its end, :2980) ----
@@ -164,18 +158,7 @@ class DrainEntryOwnershipTest {
         assertThat(registry.isDrainRequested(TARGET)).as("control: the attempt's own end clears its own command").isFalse();
     }
 
-    /// Tripwire for E1 by a refused reap: today the DRAIN attempt's grace expiry clears the eviction's command.
-    @Test
-    void e1Tripwire_evictionThenDrain_refusedReapAtGraceExpiry_todayClearsTheEvictionsCommand() {
-        start(AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(1).seconds()));
-        evictThenDrain();
-        refuseTheReapThenExpireTheGrace();
-
-        assertThat(registry.isDrainRequested(TARGET)).as(fixed("refused reap", "e1_evictionThenDrain_refusedReapAtGraceExpiry_keepsTheEvictionsCommand")).isFalse();
-    }
-
     /// Red when: the later DRAIN attempt's grace expiry, whose reap is refused, ends the eviction's command while the node lives.
-    @Disabled(LANE_B)
     @Test
     void e1_evictionThenDrain_refusedReapAtGraceExpiry_keepsTheEvictionsCommand() {
         start(AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(1).seconds()));
@@ -193,18 +176,7 @@ class DrainEntryOwnershipTest {
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(CANCELLED));
     }
 
-    /// Tripwire for E1 by a cancel: today the cancel of the DRAIN attempt clears the eviction's command.
-    @Test
-    void e1Tripwire_evictionThenDrain_cancelOnRejoin_todayClearsTheEvictionsCommand() {
-        start(AutoHealConfig.DEFAULT);
-        evictThenDrain();
-        rejoinAsANewIncarnation();
-
-        assertThat(registry.isDrainRequested(TARGET)).as(fixed("cancel", "e1_evictionThenDrain_cancelOnRejoin_keepsTheEvictionsCommand")).isFalse();
-    }
-
     /// Red when: the cancel of the later DRAIN attempt ends the eviction's command while the node lives.
-    @Disabled(LANE_B)
     @Test
     void e1_evictionThenDrain_cancelOnRejoin_keepsTheEvictionsCommand() {
         start(AutoHealConfig.DEFAULT);
@@ -216,18 +188,7 @@ class DrainEntryOwnershipTest {
 
     // ---- E1 through the deactivation (M8 `deactivate`, :4444) ----
 
-    /// Tripwire for E1 by a deactivation: today the deactivation clears the eviction's command with the DRAIN attempt's.
-    @Test
-    void e1Tripwire_evictionThenDrain_deactivation_todayClearsTheEvictionsCommand() {
-        start(AutoHealConfig.DEFAULT);
-        evictThenDrain();
-        ctm.deactivate();
-
-        assertThat(registry.isDrainRequested(TARGET)).as(fixed("deactivate", "e1_evictionThenDrain_deactivation_keepsTheEvictionsCommand")).isFalse();
-    }
-
     /// Red when: the deactivation clears the later DRAIN attempt's id, which is the eviction's, while the node lives.
-    @Disabled(LANE_B)
     @Test
     void e1_evictionThenDrain_deactivation_keepsTheEvictionsCommand() {
         start(AutoHealConfig.DEFAULT);
@@ -235,6 +196,20 @@ class DrainEntryOwnershipTest {
         ctm.deactivate();
 
         assertThat(registry.isDrainRequested(TARGET)).as("E1: a deactivation ended the eviction's command").isTrue();
+    }
+
+    /// The eviction's command still ends where the invariant puts its end: the DEAD edge (`clearEndedLife`, the clear the node's
+    /// membership listener makes on the edge into DEAD).
+    @Test
+    void e1_evictionThenDrain_afterTheDrainEnds_theDeadEdgeEndsTheEvictionsCommand() {
+        start(AutoHealConfig.DEFAULT);
+        evictThenDrain();
+        ctm.deactivate();
+        assertThat(registry.isDrainRequested(TARGET)).as("instrument: the DRAIN attempt ended and the eviction's command stands").isTrue();
+
+        registry.clearEndedLife(TARGET, 0L);
+
+        assertThat(registry.isDrainRequested(TARGET)).as("the DEAD edge ends the eviction's command").isFalse();
     }
 
     // ---- M5 `untrack` (a failed request ends its attempt by release too): the same shape through the other release ----
@@ -251,21 +226,12 @@ class DrainEntryOwnershipTest {
         assertThat(failedAttemptsPin).as("instrument: the failed attempt left its command").hasSize(1);
         assertThat(drains.held()).as("instrument: the failed attempt released its id").isZero();
         assertThat(ctm.drainNode(TARGET, DrainReason.OPERATOR_COMMAND).await().isSuccess()).as("instrument: the second attempt was accepted").isTrue();
-        assertThat(pins()).as("instrument: the second attempt owns the failed attempt's pin (same id)").isEqualTo(failedAttemptsPin);
+        assertThat(pins()).as("instrument: the second attempt owns a new pin, not the failed attempt's").isNotEqualTo(failedAttemptsPin);
         join();
         await().atMost(Duration.ofSeconds(5)).until(() -> raised.contains(CANCELLED));
     }
 
-    /// Tripwire for E1 by a failed request: today the later attempt's cancel clears the command the failed attempt left.
-    @Test
-    void e1FailedRequestTripwire_failedAttemptThenAnotherThenCancel_todayClearsTheLeftCommand() {
-        failedAttemptThenAnotherThenCancel();
-
-        assertThat(registry.isDrainRequested(TARGET)).as(fixed("failed request", "e1FailedRequest_failedAttemptThenAnotherThenCancel_keepsTheLeftCommand")).isFalse();
-    }
-
     /// Red when: a later attempt's cancel ends the command a failed (released) attempt left to the DEAD edge.
-    @Disabled(LANE_B)
     @Test
     void e1FailedRequest_failedAttemptThenAnotherThenCancel_keepsTheLeftCommand() {
         failedAttemptThenAnotherThenCancel();

@@ -61,22 +61,6 @@ class TopologyDrainsTest {
         assertThat(registry.isDrainRequested(OTHER)).as("an operator's drain is not the manager's to end").isTrue();
     }
 
-    /// The node's process changed between two requests of the manager: the second is a new drain with a new id, and the manager
-    /// holds THAT id. Holding the first would make the end of the attempt a clear by a stale id: refused, the entry left standing.
-    @Test
-    void request_afterTheNodesProcessChanged_holdsTheNewId_andClearEndsTheNewEntry() {
-        drains.request(NODE);
-        var first = registry.pinOf(NODE).unwrap().id();
-        process.set(2);
-        drains.request(NODE);
-        assertThat(registry.pinOf(NODE).unwrap().id()).as("instrument check: the second request is a new drain").isNotEqualTo(first);
-
-        drains.clear(NODE);
-
-        assertThat(registry.isDrainRequested(NODE)).as("cleared by the held, current id: no entry is left behind").isFalse();
-        assertThat(drains.held()).isZero();
-    }
-
     @Test
     void request_forTheSameNodeTwice_holdsOneId() {
         drains.request(NODE);

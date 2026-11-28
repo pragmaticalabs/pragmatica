@@ -26,7 +26,9 @@ import org.pragmatica.lang.Option;
 ///
 /// The held ids are at most the manager's own pending attempts: [#request] adds one per node, and the end of the attempt removes
 /// it. An attempt ends in one of two ways, and each reaches the holder: [#clear] ends the attempt and the command, [#release] ends
-/// the attempt and leaves the command to the node's DEAD edge (an eviction).
+/// the attempt and leaves the command to the node's DEAD edge (an eviction). A released command is the registry's to guard: its pin
+/// leaves the live slot ([DrainCommandRegistry#release]), so the next attempt for the same node is handed a new id, never the id of
+/// a command that is no longer its own.
 final class TopologyDrains {
     private final DrainCommandRegistry registry;
     private final Map<NodeId, DrainId> held = new ConcurrentHashMap<>();
@@ -58,11 +60,11 @@ final class TopologyDrains {
         Option.option(held.remove(target)).onPresent(registry::clearDrain);
     }
 
-    /// Ends the attempt for `target` and keeps its command: forgets the id this manager held, so the entry stays until the node's
-    /// DEAD edge clears it. A no-op when it held none.
+    /// Ends the attempt for `target` and keeps its command: forgets the id this manager held and releases it in the registry, so the
+    /// entry stays until the node's DEAD edge clears it and no later attempt takes it. A no-op when it held none.
     @Contract
     void release(NodeId target) {
-        held.remove(target);
+        Option.option(held.remove(target)).onPresent(registry::release);
     }
 
     int held() {
