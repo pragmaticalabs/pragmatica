@@ -259,6 +259,7 @@ class ReceiptWriterTripwireTest {
     }
 
     private void seedReceipt() {
+        // Seeded through applyEffects: production has no receipt writer, and the applier refuses a receipt put by design (#3860).
         ReceiptInertness.plant(store, RECEIPT, RECEIPT_VALUE);
     }
 

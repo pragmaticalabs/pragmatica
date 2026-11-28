@@ -109,6 +109,7 @@ class TerminationRetirementTest {
 
     private void seed(AetherKey key, AetherValue value) {
         if (key instanceof DirectiveReceiptKey) {
+            // Seeded through applyEffects: production has no receipt writer, and the applier refuses a receipt put by design (#3860).
             ReceiptInertness.plant(store, key, value);
             submitted.clear();
             return;

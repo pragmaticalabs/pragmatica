@@ -609,6 +609,7 @@ class CommunityPlacementReconcilerTest {
     private static final AetherValue.DirectiveReceiptValue RECEIPT = AetherValue.DirectiveReceiptValue.directiveReceiptValue("worker");
 
     private void seedReceipt(NodeId node) {
+        // Seeded through applyEffects: production has no receipt writer, and the applier refuses a receipt put by design (#3860).
         ReceiptInertness.plant(store, new AetherKey.DirectiveReceiptKey(node), RECEIPT);
     }
 

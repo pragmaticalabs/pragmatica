@@ -15,7 +15,8 @@ import java.util.List;
 /// node's unit is refused ([KVCommand.RefusalKind#ARM], naming the key). The decision reads only committed storage and the command, so every
 /// replica decides identically. Snapshot install and replica effects replay already-admitted state and bypass the fence, as they do every other one.
 ///
-/// A future writer of such a key (an issuer) is a second owner and needs its own admission here; there is none today.
+/// A future writer of such a key (an issuer) is a second owner and needs its own admission here; there is none today. A future receipt WRITER must
+/// add its own admitted shape in KVStore's arm, and the pin `aBarePutOfAnotherValueAtTheReceiptKey_isDropped` will go RED until it does.
 public interface RetiredWithUnit {
     /// The other keys of this key's retirement unit, each of which must be removed or witnessed absent in a transaction that removes this key.
     List<? extends StructuredKey> unitMates();
