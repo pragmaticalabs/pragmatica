@@ -150,6 +150,20 @@ class DrainCommandRegistryIdentityTest {
         assertThat(drain(NODE)).as("token lost after the pin").isEqualTo(bootWindow);
     }
 
+    /// The pin records the boot token the registry read when the drain was set. Nothing compares it (#3858 F1: the production token
+    /// moves only from unknown to known), so this is the one place that pins it as identity data.
+    @Test
+    void pin_recordsTheBootTokenAndIncarnationItWasSetAt() {
+        process.set(7);
+        incarnation.set(3);
+        drain(NODE);
+
+        var pin = registry.pinOf(NODE).unwrap();
+
+        assertThat(pin.process()).isEqualTo(7L);
+        assertThat(pin.incarnation()).isEqualTo(3L);
+    }
+
     /// The boot window: before a subject is bound every pin carries process `0` and incarnation `0`, which no edge takes as
     /// evidence of another life. Kills `DrainSubject.unknown()` answering `1` for either.
     @Test

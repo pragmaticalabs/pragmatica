@@ -42,6 +42,8 @@ import org.pragmatica.lang.Option;
 /// Thread-safe: every write holds the registry's monitor; the reads (the periodic ping tick via [`#isDrainRequested`] /
 /// [`#drainTargets`]) take no lock and read a `ConcurrentHashMap`. A move writes the released slot before it removes the live one, so
 /// a read sees the command throughout. Every clear removes the exact pin it read (`remove(node, pin)`). Requests are idempotent.
+/// Lock order: the caller's monitors (the topology manager's, the membership FSM's per-member guard) come first, then this one, then
+/// the bound [DrainSubject]'s reads (a per-member monitor of the FSM, a leaf). Nothing here calls out except those two reads.
 public final class DrainCommandRegistry {
     /// Who asked for a drain. One entry per node and requester: a request from another requester never joins an entry, so a clear
     /// by the id of one never reaches the other.
