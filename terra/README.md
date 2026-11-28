@@ -11,6 +11,7 @@ The same sources run on both runtimes. The blueprint syntax is shared, so a slic
 - An executable distribution built by `terra:assemble`, started with `bin/terra`; `bin/terra --check` validates the slice graph, configuration and migration files without starting anything ([launcher guide](launcher/README.md)).
 - Reflection-free JSON codecs, generated at compile time ([JSON module](../integrations/serialization/json/README.md)).
 - In-process, ephemeral pub-sub between slices.
+- Actuator-compatible management endpoints under Spring Boot's `management.*` keys: a default launch serves `/actuator/health`, and a slice route at or under the base path (default `/actuator`) is refused at startup naming the route ([settings](launcher/README.md#management-endpoints-actuator)).
 
 For AI-assisted development the structure is fixed: slices, resources and routes have one shape, and a mistake in that shape surfaces at compile time (the annotation processor) or in `--check`, not in production.
 

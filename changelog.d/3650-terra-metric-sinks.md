@@ -13,4 +13,4 @@
   terra/launcher/src/test/java/org/pragmatica/terra/launcher/TerraConfigurationTest.java].
 - The sinks are built after the graph resolves and close with the application, also when a start is refused
   [verified: `TerraApplicationTest#start_failedConstruction_closesTheMetricSinks`]. Serving `/actuator/prometheus` is
-  #3651; traces (part 2) wait on #3652's cell seams.
+  #3868; traces (part 2) wait on #3652's cell seams.

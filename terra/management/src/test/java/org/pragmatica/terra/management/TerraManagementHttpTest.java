@@ -1,0 +1,388 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
+package org.pragmatica.terra.management;
+
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.http.handler.security.SecurityPolicy;
+import org.pragmatica.aether.http.security.HttpAuthenticator;
+import org.pragmatica.aether.slice.ProvisioningContext;
+import org.pragmatica.aether.slice.ResourceProviderFacade;
+import org.pragmatica.config.ConfigurationProvider;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.routing.RouteMountMode;
+import org.pragmatica.http.server.HttpServerConfig;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.terra.TerraApplication;
+import org.pragmatica.terra.TerraBlueprint;
+import org.pragmatica.terra.TerraContext;
+import org.pragmatica.terra.TerraFactory;
+import org.pragmatica.terra.http.TerraHttpConfig;
+import org.pragmatica.terra.http.TerraHttpMount;
+import org.pragmatica.terra.http.TerraHttpServer;
+import org.pragmatica.terra.management.HealthIndicator.Health;
+import org.pragmatica.terra.management.HealthIndicator.Status;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+import static org.pragmatica.lang.utils.Causes.cause;
+
+/// #3651 contract: each endpoint's response against Spring Boot's documented actuator v3 shapes, served through a real
+/// Terra host (shared listener and a separate management port).
+class TerraManagementHttpTest {
+    private static final String KEY = "management-key-0123456789abcdef";
+    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final HttpClient CLIENT = HttpClient.newHttpClient();
+
+    record Sample() {}
+
+    record Factory<T>(Class<T> sliceType, T value) implements TerraFactory<T> {
+        public String artifact() { return "test:" + sliceType.getSimpleName() + ":1"; }
+        public List<Class<?>> dependencies() { return List.of(); }
+        public Promise<T> create(TerraContext context) { return Promise.success(value); }
+    }
+
+    @Test
+    void defaultConfig_exposesOnlyHealth() throws Exception {
+        try (var host = Host.start(Map.of(), Map.of())) {
+            var health = host.get("/actuator/health");
+
+            assertThat(health.statusCode()).isEqualTo(200);
+            assertThat(health.headers().firstValue("Content-Type")).hasValue(TerraManagement.ACTUATOR_V3);
+            assertThat(json(health)).isEqualTo(JSON.readTree("{\"status\":\"UP\",\"groups\":[\"liveness\",\"readiness\"]}"));
+            assertThat(json(host.get("/actuator/health/liveness"))).isEqualTo(JSON.readTree("{\"status\":\"UP\"}"));
+            assertThat(json(host.get("/actuator/health/readiness"))).isEqualTo(JSON.readTree("{\"status\":\"UP\"}"));
+
+            for (var path : List.of("/actuator/info", "/actuator/metrics", "/actuator/prometheus", "/actuator/env",
+                                    "/actuator/health/ping")) {
+                assertThat(host.get(path).statusCode()).as(path).isEqualTo(404);
+            }
+
+            assertThat(host.get("/actuator", "X-API-Key", KEY).statusCode()).isEqualTo(200);
+            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").propertyNames())
+                .containsExactly("self", "health-path", "health");
+        }
+    }
+
+    @Test
+    void healthComponents_alwaysShown_springShapeAndAggregation() throws Exception {
+        var settings = Map.of("management.endpoint.health.show-details", "always");
+        Map<String, HealthIndicator> indicators = Map.of("db", () -> Promise.success(Health.health(Status.OUT_OF_SERVICE, Map.of("database", "x"))),
+                                                         "broken", () -> cause("pool gone").promise());
+
+        try (var host = Host.start(settings, indicators)) {
+            var health = host.get("/actuator/health");
+            var body = json(health);
+
+            assertThat(health.statusCode()).isEqualTo(503);
+            assertThat(body.get("status").asString()).isEqualTo("DOWN");
+            assertThat(body.get("components").propertyNames())
+                .containsExactly("broken", "db", "diskSpace", "livenessState", "ping", "readinessState");
+            assertThat(body.at("/components/broken")).isEqualTo(JSON.readTree("{\"status\":\"DOWN\",\"details\":{\"error\":\"pool gone\"}}"));
+            assertThat(body.at("/components/db/details/database").asString()).isEqualTo("x");
+            assertThat(body.at("/components/diskSpace/details").propertyNames())
+                .containsExactlyInAnyOrder("total", "free", "threshold", "path", "exists");
+            assertThat(body.at("/components/ping")).isEqualTo(JSON.readTree("{\"status\":\"UP\"}"));
+
+            var db = host.get("/actuator/health/db");
+            assertThat(db.statusCode()).isEqualTo(503);
+            assertThat(json(db).get("status").asString()).isEqualTo("OUT_OF_SERVICE");
+            assertThat(host.get("/actuator/health/nope").statusCode()).isEqualTo(404);
+        }
+    }
+
+    /// A failing indicator's `error` detail is the client-facing text of its cause (`HttpError.clientMessage`), not the
+    /// cause's `message()`, which may carry the origin chain; a throwing indicator still reads DOWN with a detail.
+    @Test
+    void healthIndicatorFailure_errorDetailIsTheClientMessage_neverTheRawMessage() throws Exception {
+        var settings = Map.of("management.endpoint.health.show-details", "always");
+        Map<String, HealthIndicator> indicators = Map.of("leaky", () -> new Leaky(HttpStatus.INTERNAL_SERVER_ERROR).promise(),
+                                                         "thrower", () -> {
+                                                             throw new IllegalStateException("boom");
+                                                         });
+
+        try (var host = Host.start(settings, indicators)) {
+            var components = json(host.get("/actuator/health")).get("components");
+
+            assertThat(components.at("/leaky/details/error").asString()).isEqualTo("safe text");
+            assertThat(components.at("/thrower/status").asString()).isEqualTo("DOWN");
+            assertThat(components.at("/thrower/details/error").asString()).isNotEmpty();
+        }
+    }
+
+    record Leaky(HttpStatus status) implements HttpError {
+        @Override
+        public String message() {
+            return "origin chain: secret internals";
+        }
+
+        @Override
+        public String clientMessage() {
+            return "safe text";
+        }
+    }
+
+    /// `include` / `exclude` take a comma list or a TOML array (which the source flattens to `[a, b]`); anything that
+    /// is not an endpoint id or `*` is refused naming the key, never read as an empty exposure.
+    @Test
+    void exposure_arrayAndCommaForms_agree_andMalformedListsAreRefusedNamingTheKey() {
+        var key = "management.endpoints.web.exposure.include";
+
+        for (var form : List.of("health,info", "[health, info]", " [ health ,info ] ")) {
+            var config = ManagementConfig.managementConfig(Map.of(key, form)).unwrap();
+
+            assertThat(config.include()).as(form).containsExactlyInAnyOrder("health", "info");
+        }
+
+        assertThat(ManagementConfig.managementConfig(Map.of(key, "[]")).unwrap().include()).isEmpty();
+        assertThat(ManagementConfig.managementConfig(Map.of(key, "[*]")).unwrap().exposed("metrics")).isTrue();
+
+        for (var bad : List.of("[health", "health]", "[health, in fo]", "\"health\"", "[1, 2]")) {
+            var refusal = ManagementConfig.managementConfig(Map.of(key, bad)).<String>fold(cause -> cause.message(), _ -> "accepted");
+
+            assertThat(refusal).as(bad).contains(key);
+        }
+
+        var exclude = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.exclude", "[info]")).unwrap();
+
+        assertThat(exclude.exclude()).containsExactly("info");
+    }
+
+    /// A separate management port is a listener of its own that keeps the application transport's maximum content length
+    /// (and its TLS: pinned through a launch in the launcher tests); the port equal to the application's shares it.
+    @Test
+    void separatePort_listenerInheritsTheApplicationTransport_samePortSharesIt() {
+        var application = HttpServerConfig.httpServerConfig("terra-app", 8080).withMaxContentLength(12345);
+
+        var separate = mountFor("9090", application).unwrap().unwrap();
+        var listener = separate.listener().unwrap();
+
+        assertThat(listener.port()).isEqualTo(9090);
+        assertThat(listener.name()).isEqualTo("terra-app-management");
+        assertThat(listener.maxContentLength()).isEqualTo(12345);
+        assertThat(mountFor("8080", application).unwrap().unwrap().listener().isEmpty()).isTrue();
+        assertThat(mountFor("-1", application).unwrap().isEmpty()).isTrue();
+    }
+
+    private static Result<Option<TerraHttpMount>> mountFor(String port, HttpServerConfig application) {
+        return ManagementConfig.managementConfig(Map.of("management.server.port", port))
+                               .flatMap(config -> TerraManagement.terraManagement(config, Map.of(), Map.of(), Option.empty()))
+                               .flatMap(management -> management.mount(application));
+    }
+
+    @Test
+    void sensitiveEndpoints_requireAuthentication_infoDoesNot() throws Exception {
+        var settings = Map.of("management.endpoints.web.exposure.include", "*",
+                              "management.info.env.enabled", "true",
+                              "info.app.name", "demo");
+
+        try (var host = Host.start(settings, Map.of())) {
+            assertThat(json(host.get("/actuator/info"))).isEqualTo(JSON.readTree("{\"app\":{\"name\":\"demo\"}}"));
+            assertThat(host.get("/actuator/metrics").statusCode()).isEqualTo(401);
+            assertThat(host.get("/actuator").statusCode()).isEqualTo(401);
+            assertThat(host.get("/actuator/prometheus").statusCode()).isEqualTo(401);
+
+            var names = host.get("/actuator/metrics", "X-API-Key", KEY);
+            assertThat(names.statusCode()).isEqualTo(200);
+            assertThat(json(names).get("names").toString()).contains("requests");
+
+            var metric = json(host.get("/actuator/metrics/requests?tag=route:a", "X-API-Key", KEY));
+            assertThat(metric.get("name").asString()).isEqualTo("requests");
+            assertThat(metric.at("/measurements/0/statistic").asString()).isEqualTo("COUNT");
+            assertThat(metric.at("/measurements/0/value").asDouble()).isEqualTo(3.0);
+            assertThat(metric.get("availableTags").toString()).isEqualTo("[{\"tag\":\"outcome\",\"values\":[\"ok\"]}]");
+            assertThat(host.get("/actuator/metrics/missing", "X-API-Key", KEY).statusCode()).isEqualTo(404);
+            assertThat(host.get("/actuator/metrics/requests?tag=bad", "X-API-Key", KEY).statusCode()).isEqualTo(400);
+
+            var scrape = host.get("/actuator/prometheus", "X-API-Key", KEY);
+            assertThat(scrape.statusCode()).isEqualTo(200);
+            assertThat(scrape.headers().firstValue("Content-Type")).hasValue(ManagementMetrics.PROMETHEUS_CONTENT_TYPE);
+            assertThat(scrape.body()).isEqualTo("requests_total 3.0\n");
+
+            assertThat(json(host.get("/actuator", "X-API-Key", KEY)).get("_links").propertyNames())
+                .containsExactly("self", "health-path", "health", "info", "metrics-requiredMetricName", "metrics", "prometheus");
+        }
+    }
+
+    @Test
+    void mediaType_negotiatesJsonOrRefuses_andPostIs405() throws Exception {
+        try (var host = Host.start(Map.of(), Map.of())) {
+            assertThat(host.get("/actuator/health", "Accept", "application/json").headers().firstValue("Content-Type"))
+                .hasValue("application/json");
+            assertThat(host.get("/actuator/health", "Accept", "text/html").statusCode()).isEqualTo(406);
+            assertThat(host.send(HttpRequest.newBuilder(host.uri("/actuator/health")).POST(HttpRequest.BodyPublishers.noBody())).statusCode())
+                .isEqualTo(405);
+        }
+    }
+
+    @Test
+    void separatePort_servesManagement_applicationListenerDoesNot() throws Exception {
+        try (var host = Host.start(Map.of("management.server.port", "0"), Map.of())) {
+            var port = host.server.mountPort("/actuator");
+
+            assertThat(port.isPresent()).isTrue();
+            assertThat(CLIENT.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port.unwrap() + "/actuator/health")).build(),
+                                   HttpResponse.BodyHandlers.ofString()).statusCode()).isEqualTo(200);
+            assertThat(host.get("/actuator/health").statusCode()).isEqualTo(404);
+        }
+    }
+
+    @Test
+    void portMinusOne_disablesHttpManagement() throws Exception {
+        try (var host = Host.start(Map.of("management.server.port", "-1"), Map.of())) {
+            assertThat(host.get("/actuator/health").statusCode()).isEqualTo(404);
+        }
+    }
+
+    @Test
+    void managementConfig_unknownKey_refused() {
+        assertThat(ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.inclde", "*")).isFailure()).isTrue();
+        assertThat(ManagementConfig.managementConfig(Map.of("management.endpoint.health.show-details", "sometimes")).isFailure()).isTrue();
+    }
+
+    @Test
+    void exposure_includeExcludeAndEnabledFlags_decideWhatIsServed() {
+        var all = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "*")).unwrap();
+        var some = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "health,info",
+                                                            "management.endpoints.web.exposure.exclude", "info")).unwrap();
+        var excludeAll = ManagementConfig.managementConfig(Map.of("management.endpoints.web.exposure.include", "*",
+                                                                  "management.endpoints.web.exposure.exclude", "*")).unwrap();
+        var off = ManagementConfig.managementConfig(Map.of("management.endpoints.enabled-by-default", "false",
+                                                           "management.endpoint.info.enabled", "true")).unwrap();
+
+        assertThat(ManagementConfig.managementConfig(Map.of()).unwrap().exposed("health")).isTrue();
+        assertThat(ManagementConfig.managementConfig(Map.of()).unwrap().exposed("info")).isFalse();
+        assertThat(all.exposed("metrics")).isTrue();
+        assertThat(some.exposed("health")).isTrue();
+        assertThat(some.exposed("info")).isFalse();
+        assertThat(some.exposed("metrics")).isFalse();
+        assertThat(excludeAll.exposed("health")).isFalse();
+        assertThat(off.enabled("health")).isFalse();
+        assertThat(off.enabled("info")).isTrue();
+        assertThat(all.enabled("health")).isTrue();
+    }
+
+    @Test
+    void exposure_excludedAndDisabledEndpoints_answer404() throws Exception {
+        var settings = Map.of("management.endpoints.web.exposure.include", "*",
+                              "management.endpoints.web.exposure.exclude", "info",
+                              "management.endpoint.metrics.enabled", "false");
+
+        try (var host = Host.start(settings, Map.of())) {
+            assertThat(host.get("/actuator/health").statusCode()).isEqualTo(200);
+            assertThat(host.get("/actuator/info").statusCode()).isEqualTo(404);
+            assertThat(host.get("/actuator/metrics", "X-API-Key", KEY).statusCode()).isEqualTo(404);
+            assertThat(host.get("/actuator/prometheus", "X-API-Key", KEY).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    void healthDetails_whenAuthorized_onlyAnAuthenticatedCallerSeesComponents() throws Exception {
+        var settings = Map.of("management.endpoint.health.show-details", "when-authorized");
+
+        try (var host = Host.start(settings, Map.of())) {
+            var anonymous = json(host.get("/actuator/health"));
+            var authorized = json(host.get("/actuator/health", "X-API-Key", KEY));
+
+            assertThat(anonymous.has("components")).isFalse();
+            assertThat(authorized.has("components")).isTrue();
+            assertThat(host.get("/actuator/health", "X-API-Key", "wrong").statusCode()).isEqualTo(401);
+        }
+    }
+
+    @Test
+    void aggregate_picksTheWorstStatusInSpringOrder() {
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UP, Status.OUT_OF_SERVICE))).isEqualTo(Status.OUT_OF_SERVICE);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UP, Status.OUT_OF_SERVICE, Status.DOWN))).isEqualTo(Status.DOWN);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UNKNOWN, Status.UP))).isEqualTo(Status.UP);
+        assertThat(HealthEndpoint.aggregate(List.of(Status.UNKNOWN))).isEqualTo(Status.UNKNOWN);
+        assertThat(HealthEndpoint.aggregate(List.of())).isEqualTo(Status.UNKNOWN);
+    }
+
+    @Test
+    void negotiate_choosesByQualityAndDefaultsToV3() {
+        var json = "application/json";
+
+        assertThat(TerraManagement.negotiate(Option.none())).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("  "))).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some(json))).isEqualTo(Option.some(json));
+        assertThat(TerraManagement.negotiate(Option.some("*/*"))).isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0.5, " + TerraManagement.ACTUATOR_V3 + ";q=0.9")))
+            .isEqualTo(Option.some(TerraManagement.ACTUATOR_V3));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0.9, " + TerraManagement.ACTUATOR_V3 + ";q=0.5")))
+            .isEqualTo(Option.some(json));
+        assertThat(TerraManagement.negotiate(Option.some("application/json;q=0, text/html"))).isEqualTo(Option.none());
+        assertThat(TerraManagement.negotiate(Option.some("text/html"))).isEqualTo(Option.none());
+    }
+
+    private static JsonNode json(HttpResponse<String> response) throws Exception {
+        return JSON.readTree(response.body());
+    }
+
+    record Host(TerraHttpServer server) implements AutoCloseable {
+        static Host start(Map<String, String> settings, Map<String, HealthIndicator> indicators) {
+            var registry = new SimpleMeterRegistry();
+            registry.counter("requests", "route", "a", "outcome", "ok").increment(2);
+            registry.counter("requests", "route", "b", "outcome", "ok").increment();
+            registry.counter("requests", "route", "a", "outcome", "ok").increment();
+            var metrics = ManagementMetrics.managementMetrics(registry, () -> Option.some("requests_total 3.0\n"));
+            var config = ManagementConfig.managementConfig(settings).unwrap();
+            var management = TerraManagement.terraManagement(config, indicators, Map.of(), Option.some(metrics)).unwrap();
+            var transport = HttpServerConfig.httpServerConfig("terra-test", 0);
+            var mounts = management.mount(transport).unwrap().stream().toList();
+            var http = TerraHttpConfig.terraHttpConfig(transport, RouteMountMode.pathMode(), SecurityPolicy.apiKeyRequired()).unwrap();
+            var server = TerraHttpServer.start(application(), http, HttpAuthenticator.apiKeyValidator(Set.of(KEY)), List.of(),
+                                               JsonMapper.defaultJsonMapper(), mounts)
+                                        .await(timeSpan(10).seconds()).unwrap();
+            return new Host(server);
+        }
+
+        URI uri(String path) {
+            return URI.create("http://127.0.0.1:" + server.port() + path);
+        }
+
+        HttpResponse<String> get(String path, String... headers) throws Exception {
+            var builder = HttpRequest.newBuilder(uri(path)).timeout(Duration.ofSeconds(5));
+            if (headers.length > 0) { builder.headers(headers); }
+            return send(builder);
+        }
+
+        HttpResponse<String> send(HttpRequest.Builder builder) throws Exception {
+            return CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        }
+
+        public void close() {
+            server.close().await(timeSpan(10).seconds()).unwrap();
+        }
+    }
+
+    private static TerraApplication application() {
+        var factory = new Factory<>(Sample.class, new Sample());
+        var provider = new ResourceProviderFacade() {
+            public <T> Promise<T> provide(Class<T> type, String section) { return cause("unexpected resource").promise(); }
+            public <T> Promise<T> provide(Class<T> type, String section, ProvisioningContext context) { return provide(type, section); }
+            public Promise<Unit> releaseAll(String scope) { return Promise.unitPromise(); }
+        };
+        return TerraApplication.start(new TerraBlueprint(List.of(factory.artifact())), List.of(factory),
+            _ -> ConfigurationProvider.builder().build(), provider).await(timeSpan(5).seconds()).unwrap();
+    }
+}
