@@ -29,6 +29,15 @@ import org.pragmatica.lang.Option;
 /// The unit read first answers `decide` about the unit read at an attempt (design 3.4, TR's one rule): the eight rows, 0 to 7, are one
 /// comparison of epochs and the directive clause, and no other condition exists. Its caller is `TerminationRetirement`.
 ///
+/// **Bound (ABA at an equal value, #3837).** "If any member moved" is a comparison by VALUE, never by instance: the removal expects the exact
+/// value read and an "absent" witness expects absence. A member removed and re-issued at an EQUAL value between the read and the commit passes
+/// both checks, and the retirement removes the re-issue; a re-issue at any other value refuses the whole transaction. The unit cannot tell an
+/// equal re-issue from the member it read, and does not try. Pinned by `TerminationRetirementTest#v3860d_characterisation_anEqualReissueBetweenTheReadAndTheCommit_ofAUnitWithNoRecord_isRemoved`.
+///
+/// **Owner of the receipt (#3860).** This unit is the only production code that mutates a `DirectiveReceiptKey`, and only as a removal: the
+/// applier admits a receipt mutation only as a removal in a transaction that also removes or witnesses absent the receipt's unit mates (the
+/// departure record and the directive of the same node, see `RetiredWithUnit`), which is the shape [#removals] and [#witnesses] build.
+///
 /// @param node      the retiring id
 /// @param record    the DEPARTED record as read
 /// @param directive the activation directive as read
