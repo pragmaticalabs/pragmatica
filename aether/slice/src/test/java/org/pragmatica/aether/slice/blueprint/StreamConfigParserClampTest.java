@@ -300,11 +300,12 @@ class StreamConfigParserClampTest {
             assertThat(sectionPath(line)).isEqualTo(Option.none());
             assertThat(externalPath(line)).isEqualTo(Option.none());
         });
-        var garbage = "auto_offset_reset = \"newest\"";
-
-        assertThat(refused(documentPath(garbage))).isInstanceOf(StreamDeclarationError.MalformedValue.class);
-        assertThat(refused(sectionPath(garbage))).isInstanceOf(StreamDeclarationError.MalformedValue.class);
-        assertThat(refused(externalPath(garbage))).isInstanceOf(StreamDeclarationError.MalformedValue.class);
+        // #3865 p21: "none" is the adjacent value; an offset-reset set widened to it would accept and ignore it.
+        List.of("auto_offset_reset = \"newest\"", "auto_offset_reset = \"none\"").forEach(garbage -> {
+            assertThat(refused(documentPath(garbage))).as(garbage).isInstanceOf(StreamDeclarationError.MalformedValue.class);
+            assertThat(refused(sectionPath(garbage))).as(garbage).isInstanceOf(StreamDeclarationError.MalformedValue.class);
+            assertThat(refused(externalPath(garbage))).as(garbage).isInstanceOf(StreamDeclarationError.MalformedValue.class);
+        });
     }
 
     /// The key is stored nowhere: a group declaring `earliest` parses to the default consumer configuration.
