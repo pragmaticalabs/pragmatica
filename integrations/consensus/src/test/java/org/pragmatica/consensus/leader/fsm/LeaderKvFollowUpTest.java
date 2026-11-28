@@ -116,6 +116,31 @@ class LeaderKvFollowUpTest {
         inbound(ctx).submit(new ClusterFsmEvent.Shutdown());
     }
 
+    /// #3846: a local-mode tick of the CURRENT electing entry whose own KV pull adopts the leader moves the FSM out of that
+    /// entry inside the same task. The tick's election then runs from a state that was left: it must elect nothing, or the
+    /// first node of the view (SELF) replaces the leader the pull just adopted (PEER). The handle's liveness check cannot
+    /// see it: the entry was live when the task started; the guard `ctx.current() != owner` is what stops it.
+    @Test
+    void electingTick_whoseKvPullAdoptsTheLeader_electsNothingFromTheLeftEntry() {
+        var fsm = fsm(Option.none(), LeaderElectionContext::awaitingKvSync);
+        var ctx = fsm.current()
+                     .ctx();
+
+        inbound(ctx).submit(new ClusterFsmEvent.NodeAdded(PEER, CORES, 1));
+        inbound(ctx).submit(new KvSyncGraceTimeout());
+        assertThat(fsm.current()).as("instrument: no record yet, so the node elects and stays in Electing")
+                                 .isInstanceOf(LeaderElectionState.Electing.class);
+        assertThat(ctx.localLeaderCandidate()).as("instrument: the view's first node is not the leader the KV will name")
+                                              .isEqualTo(Option.some(SELF));
+        kvLeader.set(Option.some(new LeaderCommitted(PEER)));
+
+        inbound(ctx).submit(new LeaderElectionEvents.ElectionTick());
+
+        assertThat(heldLeader(fsm)).as("the tick's local election replaced the leader its own KV pull adopted")
+                                   .isEqualTo(Option.some(PEER));
+        inbound(ctx).submit(new ClusterFsmEvent.Shutdown());
+    }
+
     /// d10: a follower whose leader's lease expired (no pre-vote) re-elects; the KV already names another leader of the
     /// stored view. In local mode the `ReElecting` entry pull adopts it at once, without waiting for a tick.
     @Test
