@@ -36,6 +36,7 @@ import java.util.TreeMap;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /// #3846 scan S2 (memo r3 §2.4): the internal order paths of the statemachine. Every call of `dispatch`, `followUp`
 /// and `handleInFrame` in Fsm.java and TransitionRequest.java, keyed by its ENCLOSING METHOD (never by a line), is an
@@ -49,7 +50,8 @@ class FsmOrderPathScanTest {
     private static final Path MAIN = Path.of("src/main/java/org/pragmatica/statemachine");
     private static final Set<String> NAMES = Set.of("dispatch", "followUp", "handleInFrame");
 
-    /// Head set at 0d050934ea + rc6. Entries move only with lane S (§8).
+    /// Head set at lane S (#3846 frame check): the frame check adds no path (`requireFrame` calls none of the three names),
+    /// so the set equals the one before it. Entries move only with a change of the order paths.
     private static final Map<String, Integer> HEAD_SET = Map.of("Fsm:Fsm.dispatch > handleInFrame", 1,
                                                                 "Fsm:Fsm.followUp > dispatch", 1,
                                                                 "Fsm:Fsm.dispatchRecordingFailure > dispatch", 1,
@@ -73,6 +75,23 @@ class FsmOrderPathScanTest {
 
         assertThat(actual).containsEntry("TransitionRequest:TransitionRequest.plantedIgnore > dispatch", 1);
         assertThat(actual).hasSize(HEAD_SET.size() + 1);
+        assertThat(catchThrowable(() -> assertThat(actual).containsExactlyInAnyOrderEntriesOf(HEAD_SET)))
+            .as("the exact-set check of the committed set goes RED on the planted internal dispatch")
+            .isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void positiveControl_aPlantedDispatchInTheFrameCheckedFromState_goesRedAgainstTheCommittedSet() throws IOException {
+        var request = Files.readString(MAIN.resolve("TransitionRequest.java"));
+        var planted = request.replace("fsm.requireFrame(frame);\n\n        return entered.state();",
+                                      "fsm.requireFrame(frame);\n        fsm.dispatch(event);\n\n        return entered.state();");
+        var sources = Map.of("Fsm", Files.readString(MAIN.resolve("Fsm.java")), "TransitionRequest", planted);
+        var actual = scan(sources);
+
+        assertThat(planted).as("the plant landed").isNotEqualTo(request);
+        assertThat(actual).containsEntry("TransitionRequest:TransitionRequest.fromState > dispatch", 1);
+        assertThat(catchThrowable(() -> assertThat(actual).containsExactlyInAnyOrderEntriesOf(HEAD_SET)))
+            .isInstanceOf(AssertionError.class);
     }
 
     @Test
