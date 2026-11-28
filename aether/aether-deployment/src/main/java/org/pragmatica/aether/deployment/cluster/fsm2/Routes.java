@@ -87,16 +87,26 @@ public sealed interface Routes {
     /// deploys nothing, so it declares nothing and its rows are left as they are.
     ///
     /// A draft of this blueprint already queued or in flight is not repeated: its refusal or loss is derived again by [#sweep]. The one exception
-    /// is the put of a restore ([Put#RESTORED]): the sweep never reopens a `Failed` row, so a draft in flight, which the restore's new blueprint
-    /// value refuses at the applier, must not stand in for it.
+    /// is the put of a restore ([Put#RESTORED]): the sweep never reopens a `Failed` row, so a draft in flight that the restore's new blueprint
+    /// value refuses at the applier must not stand in for it. A draft in flight that still carries the witness of the value the mirror holds is
+    /// not refused on that account and stays the one: at most one ROUTES draft of a blueprint can land at a time, on every path that submits one.
     static ClusterModel reconcile(ClusterModel m, Ctx ctx, BlueprintId id) {
         return reconcile(m, ctx, id, Put.NONE);
     }
 
     static ClusterModel reconcile(ClusterModel m, Ctx ctx, BlueprintId id, Put put) {
-        return inFlight(m, id) && !put.reopens()
+        return held(m, id, put)
                ? m
                : submit(m, id, difference(m, id, put));
+    }
+
+    /// A draft stands in for the derivation of `put`: any draft in flight does for the sweep and a new attempt; a restore reopens rows, so only
+    /// a draft whose witness is the blueprint value the mirror holds now does (a restore put the mirror classified after a refusal reindex
+    /// already advanced it to the put's own value, and the draft derived over that value is current).
+    private static boolean held(ClusterModel m, BlueprintId id, Put put) {
+        return put.reopens()
+               ? inFlightAt(m, Blueprints.ownerWitness(m, id))
+               : inFlight(m, id);
     }
 
     // -- W2: PUBLISH, W3: FAIL ---------------------------------------------------------------------------------------
@@ -463,14 +473,24 @@ public sealed interface Routes {
     private static boolean inFlight(ClusterModel m, BlueprintId id) {
         var witnessed = new AppBlueprintKey(id);
 
+        return routesDrafts(m).anyMatch(draft -> draft.guards()
+                                                      .stream()
+                                                      .anyMatch(guard -> guard.key()
+                                                                              .equals(witnessed)));
+    }
+
+    /// A ROUTES draft in flight whose witness on a blueprint row is `witness` (the row as the mirror holds it): the applier does not refuse it
+    /// for the row having moved.
+    private static boolean inFlightAt(ClusterModel m, KVCommand.ReadWitness<AetherKey> witness) {
+        return routesDrafts(m).anyMatch(draft -> draft.guards()
+                                                      .contains(witness));
+    }
+
+    private static Stream<TxDraft> routesDrafts(ClusterModel m) {
         return Stream.concat(m.outbox.stream(),
                              m.submitted.values().stream().flatMap(submission -> submission.drafts()
                                                                                            .stream()))
-                     .filter(draft -> draft.kind() == SubmitKind.ROUTES)
-                     .anyMatch(draft -> draft.guards()
-                                             .stream()
-                                             .anyMatch(guard -> guard.key()
-                                                                     .equals(witnessed)));
+                     .filter(draft -> draft.kind() == SubmitKind.ROUTES);
     }
 
     record unused() implements Routes {}
