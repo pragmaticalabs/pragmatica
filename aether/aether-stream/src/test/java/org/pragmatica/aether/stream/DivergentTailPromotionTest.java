@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.time.Duration;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
@@ -20,6 +21,7 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testing.Pause;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -84,7 +86,7 @@ class DivergentTailPromotionTest {
 
         for (var demand = 0; demand < 3; demand++) {
             assertThat(exOwnerA.mayServeAsOwner(STREAM, PARTITION)).as("never serves its divergent tail").isFalse();
-            LockSupport.parkNanos(20_000_000L);
+            Pause.pause(Duration.ofNanos(20_000_000L));
         }
 
         assertThat(alarms).containsExactly(divergent(C, 15, 12));

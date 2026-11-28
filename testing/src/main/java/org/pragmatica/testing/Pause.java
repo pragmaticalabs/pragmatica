@@ -40,7 +40,8 @@ import org.pragmatica.lang.Contract;
 ///
 /// Use it only where a plain pause is what the test means (a quiet period, pacing, "nothing happens"). A test that waits for a state it
 /// then asserts waits for THAT state: [PollUntil]. The flake scan (`FlakeScanTest`, kind `PARK_SLEEP`) refuses a `parkNanos` call that
-/// no loop encloses, in every test source of the repository.
+/// no deadline or re-checked-state loop encloses (a loop that only counts is a pause too: it goes through this class), in every test source
+/// of the repository.
 public final class Pause {
     private Pause() {}
 
