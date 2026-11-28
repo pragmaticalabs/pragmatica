@@ -147,12 +147,6 @@ class LeaderTripwireRowsTest {
     }
 
     @ParameterizedTest
-    @MethodSource("laneMRows")
-    void tripwireLaneM_atHead_compiles(TripwireRow row) throws Exception {
-        assertCompilesAtHead(row, "tripwireLaneM_underInvE_doesNotCompile");
-    }
-
-    @ParameterizedTest
     @MethodSource("laneFRows")
     void tripwireLaneF_atHead_compiles(TripwireRow row) throws Exception {
         assertCompilesAtHead(row, "tripwireLaneF_underInvE_doesNotCompile");
@@ -173,7 +167,6 @@ class LeaderTripwireRowsTest {
         assertRefusedUnderInvE(row);
     }
 
-    @Disabled("lane M: enable when FsmWithContext and FsmBackedLeaderManager lose fsm()/inbound() (K16, K19, O02, O03, O06, O07)")
     @ParameterizedTest
     @MethodSource("laneMRows")
     void tripwireLaneM_underInvE_doesNotCompile(TripwireRow row) throws Exception {

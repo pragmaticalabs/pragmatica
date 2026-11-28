@@ -67,6 +67,13 @@ class LeaderAuthorityCensusTest {
                                                       // the one grant, handed to the builder's caller
                                                       "LeaderElectionFsm.FsmWithContext.inbound",
                                                       "LeaderElectionFsm.FsmWithContext.inbound()",
+                                                      // the package-private machine of a builder: a test of this package builds a NEW one (#3846 s3.6)
+                                                      "LeaderElectionFsm.Machine.context",
+                                                      "LeaderElectionFsm.Machine.fsm",
+                                                      "LeaderElectionFsm.Machine.inbound",
+                                                      "LeaderElectionFsm.Machine.context()",
+                                                      "LeaderElectionFsm.Machine.fsm()",
+                                                      "LeaderElectionFsm.Machine.inbound()",
                                                       // builders of a NEW machine and a NEW executor
                                                       "LeaderElectionFsm.leaderElectionFsm()",
                                                       "SerialExecutor.serialExecutor()",
@@ -85,7 +92,6 @@ class LeaderAuthorityCensusTest {
         "CEN-1 LeaderElectionContext.quorumLost",
         "CEN-1 LeaderElectionContext.stopped",
         "CEN-1 LeaderElectionFsm.FsmWithContext.context",
-        "CEN-1 LeaderElectionFsm.FsmWithContext.fsm",
         "CEN-1 LeaderElectionState.AwaitingKvSync.ctx",
         "CEN-1 LeaderElectionState.AwaitingKvSync.episodeHandle",
         "CEN-1 LeaderElectionState.Dormant.ctx",
@@ -99,7 +105,6 @@ class LeaderAuthorityCensusTest {
         "CEN-1 LeaderElectionState.ReElecting.episodeHandle",
         "CEN-1 LeaderElectionState.Stopped.ctx",
         "CEN-1 LeaderManager.FsmBackedLeaderManager.context",
-        "CEN-1 LeaderManager.FsmBackedLeaderManager.fsm",
         "CEN-1 LeaderPreVote.ctx",
         "CEN-2 LeaderElectionContext.awaitingKvSync()",
         "CEN-2 LeaderElectionContext.current()",
@@ -111,7 +116,6 @@ class LeaderAuthorityCensusTest {
         "CEN-2 LeaderElectionContext.stopped()",
         "CEN-2 LeaderElectionContext.unentered()",
         "CEN-2 LeaderElectionFsm.FsmWithContext.context()",
-        "CEN-2 LeaderElectionFsm.FsmWithContext.fsm()",
         "CEN-2 LeaderElectionState.AwaitingKvSync.ctx()",
         "CEN-2 LeaderElectionState.AwaitingKvSync.episodeHandle()",
         "CEN-2 LeaderElectionState.Dormant.ctx()",
@@ -126,8 +130,6 @@ class LeaderAuthorityCensusTest {
         "CEN-2 LeaderElectionState.Stopped.ctx()",
         "CEN-2 LeaderElectionState.ctx()",
         "CEN-2 LeaderManager.FsmBackedLeaderManager.context()",
-        "CEN-2 LeaderManager.FsmBackedLeaderManager.fsm()",
-        "CEN-2 LeaderManager.FsmBackedLeaderManager.inbound()",
         "CEN-3 LeaderElectionContext.dispatchConfined: package-private",
         "CEN-3 LeaderElectionState.dispatchSelf: private static");
 
