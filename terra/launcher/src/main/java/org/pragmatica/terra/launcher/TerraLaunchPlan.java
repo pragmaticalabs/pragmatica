@@ -112,12 +112,12 @@ public final class TerraLaunchPlan {
                           TerraMetrics.Settings.settings(settings),
                           managementSettings(settings))
                      .flatMap((http, metrics, management) -> management(http, management).flatMap(mounts -> configureSlices(directory,
-                                                                                                                             blueprint,
-                                                                                                                             factories,
-                                                                                                                             deployment,
-                                                                                                                             http,
-                                                                                                                             metrics,
-                                                                                                                             mounts)));
+                                                                                                                            blueprint,
+                                                                                                                            factories,
+                                                                                                                            deployment,
+                                                                                                                            http,
+                                                                                                                            metrics,
+                                                                                                                            mounts)));
     }
 
     private static Result<TerraLaunchPlan> configureSlices(Path directory,
