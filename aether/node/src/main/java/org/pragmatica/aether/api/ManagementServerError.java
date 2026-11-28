@@ -4,9 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 
 
 public sealed interface ManagementServerError extends Cause, HttpStatusAware {
@@ -41,7 +43,7 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record StreamRefused(HttpStatus status, Cause refusal) implements ManagementServerError {
         @Override
         public String message() {
-            return refusal.message();
+            return HttpError.clientMessage(refusal);
         }
 
         @Override
@@ -55,17 +57,28 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record KeylessPublishOutcomeUnknown(Cause origin) implements ManagementServerError {
         @Override
         public String message() {
-            return "Publish outcome unknown: the event may already be in the log, and this endpoint takes no message ID, so a retry may write a duplicate (" + origin.message()
+            return "Publish outcome unknown: the event may already be in the log, and this endpoint takes no message ID, so a retry may write a duplicate (" + HttpError.clientMessage(origin)
                  + ")";
         }
     }
 
     /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
     /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
-    record InvalidRequest(String detail) implements ManagementServerError {
+    record InvalidRequest(Cause detail) implements ManagementServerError {
+        /// Client text the route's author wrote: a literal, never text taken from a cause.
+        public static InvalidRequest literal(String text) {
+            return new InvalidRequest(Causes.cause(text));
+        }
+
+        /// A parse failure of one caller-supplied value, named by the route's own literal prefix: the reason is rendered by
+        /// the one client renderer at construction, so nothing of the origin's own `message()` is copied in.
+        public static InvalidRequest because(String literalPrefix, Cause reason) {
+            return new InvalidRequest(Causes.cause(literalPrefix + ": " + HttpError.clientMessage(reason)));
+        }
+
         @Override
         public String message() {
-            return detail;
+            return HttpError.clientMessage(detail);
         }
 
         @Override
@@ -75,10 +88,15 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     }
 
     /// #954: the resource the request addressed does not exist. Carries the route's own message and answers 404.
-    record NotFound(String detail) implements ManagementServerError {
+    record NotFound(Cause detail) implements ManagementServerError {
+        /// Client text the route's author wrote: a literal, never text taken from a cause.
+        public static NotFound literal(String text) {
+            return new NotFound(Causes.cause(text));
+        }
+
         @Override
         public String message() {
-            return detail;
+            return HttpError.clientMessage(detail);
         }
 
         @Override
@@ -88,10 +106,15 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     }
 
     /// #954: a transient server-side condition (a component not yet ready on this node). Answers 503.
-    record ServiceUnavailable(String detail) implements ManagementServerError {
+    record ServiceUnavailable(Cause detail) implements ManagementServerError {
+        /// Client text the route's author wrote: a literal, never text taken from a cause.
+        public static ServiceUnavailable literal(String text) {
+            return new ServiceUnavailable(Causes.cause(text));
+        }
+
         @Override
         public String message() {
-            return detail;
+            return HttpError.clientMessage(detail);
         }
 
         @Override
@@ -101,10 +124,15 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     }
 
     /// #954: the route exists and the feature is deferred. Answers 501.
-    record NotImplemented(String detail) implements ManagementServerError {
+    record NotImplemented(Cause detail) implements ManagementServerError {
+        /// Client text the route's author wrote: a literal, never text taken from a cause.
+        public static NotImplemented literal(String text) {
+            return new NotImplemented(Causes.cause(text));
+        }
+
         @Override
         public String message() {
-            return detail;
+            return HttpError.clientMessage(detail);
         }
 
         @Override
@@ -114,10 +142,15 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     }
 
     /// #954: the request is well formed but the cluster's current state refuses it. Answers 409.
-    record Conflict(String detail) implements ManagementServerError {
+    record Conflict(Cause detail) implements ManagementServerError {
+        /// Client text the route's author wrote: a literal, never text taken from a cause.
+        public static Conflict literal(String text) {
+            return new Conflict(Causes.cause(text));
+        }
+
         @Override
         public String message() {
-            return detail;
+            return HttpError.clientMessage(detail);
         }
 
         @Override
@@ -145,10 +178,15 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     /// unknown at the route, so `validatePartition` must never guess one (e.g. against a hardcoded
     /// default) -- this reports 409 naming the stream and the underlying cause instead of silently
     /// accepting an invalid partition or rejecting a valid one against a fabricated count.
-    record StreamUnavailable(String streamName, String reason) implements ManagementServerError {
+    record StreamUnavailable(String streamName, Cause reason) implements ManagementServerError {
+        /// A refusal the route's author words as a literal, never text taken from a cause.
+        public static StreamUnavailable literal(String streamName, String text) {
+            return new StreamUnavailable(streamName, Causes.cause(text));
+        }
+
         @Override
         public String message() {
-            return "Stream '" + streamName + "' is not available: " + reason;
+            return "Stream '" + streamName + "' is not available: " + HttpError.clientMessage(reason);
         }
 
         @Override
@@ -163,7 +201,8 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
     record PublishRetryable(String streamName, Cause cause) implements ManagementServerError {
         @Override
         public String message() {
-            return "Publish to stream '" + streamName + "' refused before writing, retry: " + cause.message();
+            return "Publish to stream '" + streamName
+                 + "' refused before writing, retry: " + HttpError.clientMessage(cause);
         }
 
         @Override
@@ -180,7 +219,7 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         public String message() {
             return "Stream '" + streamName
                  + "' partition " + partition
-                 + " owner did not answer, retry: " + cause.message();
+                 + " owner did not answer, retry: " + HttpError.clientMessage(cause);
         }
 
         @Override

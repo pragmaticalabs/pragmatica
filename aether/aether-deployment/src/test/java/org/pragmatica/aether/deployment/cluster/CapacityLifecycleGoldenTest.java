@@ -216,6 +216,7 @@ class CapacityLifecycleGoldenTest {
         refusals();
         inventoryPasses();
         termination();
+        fencing();
         readmission();
         markers();
         externalRelease();
@@ -549,6 +550,43 @@ class CapacityLifecycleGoldenTest {
         }
     }
 
+    /// The fence's port (C1) and its apply-timeout window. The witness is accepted or refused by the real store; the monotonic clock is the rig's
+    /// `nano`, advanced inside the witness commit so that the elapsed check is deterministic. `withApplyTimeout` is read on the same scenario as
+    /// the expiry, with a window wide enough to admit it: the pair shows the window is the one the lifecycle was given.
+    private void fencing() {
+        for (var lead : LEADING) {
+            run("fenced/witness-holds/ABSENT", lead, r -> {
+                r.start(Start.ABSENT);
+                r.step("fenced(guards,effect)", () -> r.lc.fenced(List.of(r.witnessOfX(Option.none())), r::effect));
+            });
+            run("fenced/witness-holds/OBSERVED", lead, r -> {
+                r.start(Start.OBSERVED);
+                r.step("fenced(guards,effect)", () -> r.lc.fenced(List.of(r.witnessOfX(Option.some(r.observed()))), r::effect));
+            });
+            run("fenced/witness-refused/OBSERVED", lead, r -> {
+                r.start(Start.OBSERVED);
+                r.step("fenced(guards,effect)", () -> r.lc.fenced(List.of(r.witnessOfX(Option.some(r.dispatched()))), r::effect));
+            });
+            run("fenced/witness-expired/OBSERVED", lead, r -> {
+                r.start(Start.OBSERVED);
+                r.afterCommit = r::outlastApplyTimeout;
+                r.step("fenced(guards,effect)", () -> r.lc.fenced(List.of(r.witnessOfX(Option.some(r.observed()))), r::effect));
+            });
+            run("fenced/leadership-lost-after-witness/OBSERVED", lead, r -> {
+                r.start(Start.OBSERVED);
+                r.afterCommit = () -> r.leading.set(false);
+                r.step("fenced(guards,effect)", () -> r.lc.fenced(List.of(r.witnessOfX(Option.some(r.observed()))), r::effect));
+            });
+            run("withApplyTimeout/window-widened/OBSERVED", lead, r -> {
+                r.start(Start.OBSERVED);
+                r.afterCommit = r::outlastApplyTimeout;
+                r.step("withApplyTimeout(timeout)",
+                       () -> r.lc.withApplyTimeout(TimeSpan.timeSpan(10 * CEILING_MS).millis())
+                                 .fenced(List.of(r.witnessOfX(Option.some(r.observed()))), r::effect));
+            });
+        }
+    }
+
     private void readmission() {
         for (var lead : LEADING) {
             for (var start : List.of(Start.EXT_EMPTY, Start.EXT_UNCOUNTED, Start.OBSERVED)) {
@@ -788,6 +826,8 @@ class CapacityLifecycleGoldenTest {
         });
         final AtomicBoolean leading = new AtomicBoolean();
         final AtomicLong clock = new AtomicLong(T0);
+        /// The fence's monotonic clock, in nanoseconds; it moves only when a scenario moves it.
+        final AtomicLong nano = new AtomicLong(1L);
         final List<String> calls = new CopyOnWriteArrayList<>();
         final List<String> warnings = new CopyOnWriteArrayList<>();
         final List<String> rows = new ArrayList<>();
@@ -818,7 +858,8 @@ class CapacityLifecycleGoldenTest {
                                      new AetherValue.ClusterConfigValue(Option.some(EAST_TOML), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
             seedLedger(0, true);
             lc = CapacityControlledLifecycle.capacityControlledLifecycle(provider(), CORE, store, this::apply, leading::get, () -> limit,
-                                                                         TimeSpan.timeSpan(CEILING_MS).millis(), clock::get);
+                                                                         TimeSpan.timeSpan(CEILING_MS).millis(), clock::get, nano::get,
+                                                                         TimeSpan.timeSpan(CEILING_MS).millis());
             sink = OperatorWarningSink.handingOffTo(warning -> warnings.add(describe(warning)));
             lc.setOperatorWarningSink(sink);
         }
@@ -945,6 +986,29 @@ class CapacityLifecycleGoldenTest {
         private void counted(CapacityReservationValue value) {
             put(new AetherKey.CapacityReservationKey(X), value);
             seedLedger(1, true);
+        }
+
+        CapacityReservationValue observed() {
+            return reservation("east", "binding", "worker", CapacityReservationPhase.OBSERVED);
+        }
+
+        CapacityReservationValue dispatched() {
+            return reservation("east", "binding", "worker", CapacityReservationPhase.DISPATCHED);
+        }
+
+        KVCommand.ReadWitness<AetherKey> witnessOfX(Option<CapacityReservationValue> expected) {
+            return new KVCommand.ReadWitness<AetherKey>(new AetherKey.CapacityReservationKey(X), expected.map(value -> (Object) value));
+        }
+
+        /// The effect a fenced step guards: it records itself as a provider call, so a row shows whether it ran.
+        Promise<Unit> effect() {
+            calls.add("effect");
+            return Promise.unitPromise();
+        }
+
+        /// The apply deadline of the fence (one ceiling) passes, on the fence's own monotonic clock.
+        void outlastApplyTimeout() {
+            nano.addAndGet(2 * CEILING_MS * 1_000_000L);
         }
 
         SourceName east() {

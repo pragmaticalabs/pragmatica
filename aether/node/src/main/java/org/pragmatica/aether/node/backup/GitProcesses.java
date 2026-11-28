@@ -48,7 +48,9 @@ import org.pragmatica.lang.utils.Causes;
 /// of them can start another. The members below the roots are then killed, the roots still frozen and alive; the roots' trees are read once more (the
 /// sweep), and a member found only now is frozen the same way, read until a confirmed read adds nothing, and only then killed; the roots are killed
 /// last. Guarantee earned: when every round's wait saw each member stopped, every process that was in a root's tree up to the read that ended the
-/// freeze or the sweep is dead when [#kill] returns `true`; `false` is returned when the bound ran out first.
+/// freeze or the sweep is dead when [#kill] returns `true`; `false` is returned when the bound ran out first. Dead is read twice for a root: its handle
+/// has exited, and the `Process` itself reports exited (`Process#waitFor`), so `Process#isAlive` of every root is `false` when [#kill] returns `true`
+/// (#3841: the handle's exit can be seen a moment before the `Process`'s).
 ///
 /// The residue, where the guarantee is weaker: the stop is confirmed only where `/proc` can be read (Linux). Without it, or when a member is not seen
 /// stopped within its round (one the helper may not signal, a helper that hangs), the round reads anyway: a fork that completes after that read is
@@ -196,7 +198,9 @@ class GitProcesses {
         sweep(processes, tree, freeze);
         roots.forEach(ProcessHandle::destroyForcibly);
 
-        return awaitDead(tree.keySet(), freeze.deadline(), freeze.interrupts());
+        return awaitDead(tree.keySet(), freeze.deadline(), freeze.interrupts()) && awaitExited(processes,
+                                                                                               freeze.deadline(),
+                                                                                               freeze.interrupts());
     }
 
     /// Stop every member of `tree`, wait until each is seen stopped, then read the roots' trees again; repeat until a read adds nothing, within the
@@ -380,6 +384,25 @@ class GitProcesses {
         }
 
         return true;
+    }
+
+    /// Whether every `Process` of `processes` itself reports exited by `deadline`. A handle's exit and its `Process`'s are two completion stages of the
+    /// JDK's reaper, and the handle's can complete first: a caller that saw [#kill] return `true` and then read `Process#isAlive` found the root alive
+    /// (#3841). Waiting on the `Process` closes that gap for the roots; the members below them are handles only, and [#awaitDead] is their whole wait.
+    private static boolean awaitExited(List<Process> processes, long deadline, AtomicBoolean interrupts) {
+        return processes.stream()
+                        .allMatch(process -> exited(process, deadline, interrupts));
+    }
+
+    private static boolean exited(Process process, long deadline, AtomicBoolean interrupts) {
+        for (;;) {
+            try {
+                return process.waitFor(Math.max(0, deadline - System.nanoTime()),
+                                       TimeUnit.NANOSECONDS);
+            } catch (InterruptedException interrupted) {
+                interrupts.set(true);
+            }
+        }
     }
 
     private static boolean ended(ProcessHandle handle, long deadline, AtomicBoolean interrupts) {

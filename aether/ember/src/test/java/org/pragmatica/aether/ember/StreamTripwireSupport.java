@@ -109,13 +109,17 @@ final class StreamTripwireSupport {
                                             retention.maxBytes());
     }
 
-    @SuppressWarnings("JBCT-EX-01")
     static Response post(int mgmtPort, String path, String json) {
+        return post(mgmtPort, path, "application/json", json);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    static Response post(int mgmtPort, String path, String contentType, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://127.0.0.1:" + mgmtPort + path))
                                  .timeout(REQUEST_TIMEOUT)
-                                 .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(json))
+                                 .header("Content-Type", contentType)
+                                 .POST(HttpRequest.BodyPublishers.ofString(body))
                                  .build();
         var started = System.nanoTime();
 

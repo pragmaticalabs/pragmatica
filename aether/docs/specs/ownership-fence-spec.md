@@ -246,6 +246,17 @@ What the DHT data plane guarantees per operation, and the mechanism behind each 
 
 - **Fresh write (`DHTClient.put`), current owner.** Applied once a write quorum of replicas accepts it.
   *Mechanism:* each replica's `putVersioned` checks the presented epoch against its own high-water.
+- **Fresh write, floor stamp (this node has not applied the ownership record).** Refused by every replica
+  that has applied it. The caller gets `DHTError.OwnershipNotApplied` (transient): it may have been applied,
+  like `WriteIndeterminate`. The coordinator rolls back its own accept the same way. A retry is stamped with the
+  epoch applied by then. A refused put with a real older epoch stays `WriteIndeterminate`. One put is stamped
+  from ONE read of the record (`OwnerEpochSource.currentEpoch`).
+  *Mechanism:* `DistributedDHTClient.toldApart` on the coordinator's own stamp, no wire change
+  [verified: DHTOwnerEpochStampTest.put_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied,
+  put_floorStampRefusedByAppliedHighWater_isRolledBackOnTheWriter,
+  put_olderRealEpochRefusedByAppliedHighWater_staysWriteIndeterminate,
+  put_recordChangesOnEveryRead_everyReplicaHoldsOneWholeEpoch,
+  remove_floorStampRefusedByAppliedHighWater_failsOwnershipNotApplied].
 - **Fresh write, deposed owner (presented epoch below some replicas' high-water).** Refused by every
   replica that has seen the new epoch. If too few accept, the write is **INDETERMINATE**
   (`DHTError.WriteIndeterminate`, transient), never a definite failure. It *may have been applied*: on the
@@ -266,14 +277,14 @@ What the DHT data plane guarantees per operation, and the mechanism behind each 
   ownership rewrite could never be re-replicated (#1818, run 7). Each copy applied below the receiver's
   high-water is counted (`DHTNode.belowHighWaterCopyCount`) and logged at INFO with its partition.
 
-Each consumer of the DHT put path, and what it does with `WriteIndeterminate` (#1818 L2). `StorageFactory`
+Each consumer of the DHT put path, and what it does with `WriteIndeterminate` or `OwnershipNotApplied` (the table covers both causes; #1818 L2). `StorageFactory`
 gives every storage instance a `DhtStorageTier`, so every `StorageInstance` write is a consumer:
 
 | Consumer | Handling |
 |---|---|
-| `ArtifactStore` metadata and version writes (`dhtPutWithRetry`) | Retried. `isTransientDhtFailure` classifies `WriteIndeterminate` as transient; this is the only consumer that names it. |
+| `ArtifactStore` metadata and version writes (`dhtPutWithRetry`) | Retried. `isTransientDhtFailure` classifies `WriteIndeterminate` and `OwnershipNotApplied` as transient; this is the only consumer that names them. |
 | `ArtifactStore` chunk writes (`storagePutWithRetry` → `StorageInstance` → `DhtStorageTier`) | Retried by the same classifier; `StorageInstance` surfaces the tier's original cause. |
-| Encryption-marker write (`StorageFactory`) | Retried, but generically: the marker check retries every cause that is not `Cause.Terminal`, and `WriteIndeterminate` is not. |
+| Encryption-marker write (`StorageFactory`) | Retried, but generically: the marker check retries every cause that is not `Cause.Terminal`, and neither `WriteIndeterminate` nor `OwnershipNotApplied` is. |
 | DHT cache (`DHTCacheBackend.put` via `CacheMethodInterceptor.store`) | Not retried. The method's value is returned and the key is invalidated. |
 | Idempotency store (`DHTCacheBackend` via `IdempotencyMethodInterceptor.recordOutcome`) | Not retried here. The request fails retryably, as for any put failure; the client's retry finds the recorded outcome if it was applied, and re-runs otherwise. |
 | Stream segment sealing (`SegmentSealer` → `StorageSegmentSink`) | Retried, generically: `SEAL_RETRY` retries any failure, and an exhausted cycle keeps the segment pending and restarts. |
@@ -305,6 +316,7 @@ Recovery: the next write of the key by its current owner supersedes the spread v
 |---|---|---|
 | Fenced KV put | `StaleEpoch(key, presented, current)` | re-resolve owner; retry against current owner/epoch |
 | DHT put losing its quorum to fences | `DHTError.WriteIndeterminate(required, achieved, fenced)` | treat as "may have been applied"; per-consumer handling in §7.1 |
+| DHT put whose own stamp was the floor | `DHTError.OwnershipNotApplied(required, achieved, fenced)` | wait for the ownership record, then retry; treat as "may have been applied" |
 | Stream append (deposed writer: a real epoch strictly below the high-water) | `StaleEpochAppend(stream, partition, presented, current)` | same |
 | Stream append presenting `Epoch.ZERO` while the high-water is above it: the owner's store has not applied its ownership record yet, so the source answered the unfenced floor (#2755; raised by `StreamPartitionManager.staleRefusal`, `Cause.Transient`) | `OwnershipNotApplied(stream, partition, current)` | retry against the **same** owner; the record's apply lands within a replication round. Do not re-resolve: the writer is not deposed |
 | Owner read (deposed) | `NotCurrentOwner(redirectTo)` | route to the resolved current owner |

@@ -18,7 +18,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ConsumerGroupKey;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerGroupValue;
-import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -63,15 +63,15 @@ class ManagementCompositeAndIdParseStatusTest {
 
     @Test
     void composite_ofMembersThatAgree_answersTheirStatus() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
-                                         new ManagementServerError.InvalidRequest("b").result());
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
+                                         ManagementServerError.InvalidRequest.literal("b").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test
     void composite_ofMembersThatDisagree_staysInternalServerError() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
                                          new ManagementServerError.NotLeader("").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
@@ -79,7 +79,7 @@ class ManagementCompositeAndIdParseStatusTest {
 
     @Test
     void composite_withAnUntypedMember_staysInternalServerError() {
-        var composite = Causes.composite(new ManagementServerError.InvalidRequest("a").result(),
+        var composite = Causes.composite(ManagementServerError.InvalidRequest.literal("a").result(),
                                          Causes.cause("untyped").result());
 
         assertThat(problemStatus(composite)).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
@@ -162,13 +162,13 @@ class ManagementCompositeAndIdParseStatusTest {
         var clusterNode = mock(ClusterNode.class);
 
         when(clusterNode.apply(any())).thenReturn(Promise.success(List.of()));
-        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode, registry, () -> Epoch.epoch(1L, 1L, 0L));
+        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode, registry, () -> Epoch.epoch(1L, 1L, 0L), _ -> Option.some(1L));
 
         coordinator.onLeaderChange(new LeaderChange(Option.some(self), true));
         coordinator.joinGroup("g1", streamName, 4, "c1", self);
         coordinator.joinGroup("g1", streamName, 4, "c2", self);
         registry.onConsumerGroupPut(new ValuePut<>(new KVCommand.Put<>(new ConsumerGroupKey("g1", streamName, 0),
-                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(self, "c2", Epoch.epoch(1L, 5L, 0L))),
+                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(self, "c2", Epoch.epoch(1L, 5L, 0L), 1L)),
                                                    Option.none()));
         return coordinator;
     }
@@ -207,14 +207,12 @@ class ManagementCompositeAndIdParseStatusTest {
             .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    /// #1753, #1963: the catalog decides a stream is unknown, so the engine is never asked (an unstubbed `streamPartitionManager`
+    /// would fail the handler with the "reached past the refusal" error).
     @Test
-    void streamGet_answers404_whenTheStreamIsUnknown() {
-        var manager = mock(StreamPartitionManager.class);
-
-        when(manager.streamInfo(org.mockito.ArgumentMatchers.anyString())).thenReturn(Option.none());
-
-        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("streamPartitionManager", manager)),
-                                                     null,
+    void streamGet_answers404_whenTheCatalogDoesNotKnowTheStream() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("kvStore", StreamRouteFixtures.emptyStore())),
+                                                     StreamNamespacesService.inMemory(),
                                                      ConsumerGroupCoordinator.noOp(),
                                                      null);
 

@@ -18,6 +18,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -42,7 +43,7 @@ class RemoteRepositoryCacheWiringTest {
     void setUp() throws IOException {
         previousRepoProperty = System.getProperty("maven.repo.local");
         System.setProperty("maven.repo.local", localRepo.toString());
-        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server = HeldPort.httpServer();
         var sha256 = ArtifactCache.digest(JAR, "SHA-256").unwrap().getBytes(StandardCharsets.US_ASCII);
         server.createContext(JAR_PATH, exchange -> {
             var path = exchange.getRequestURI().getPath();

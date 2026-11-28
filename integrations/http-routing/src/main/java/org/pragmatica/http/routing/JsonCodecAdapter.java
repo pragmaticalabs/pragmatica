@@ -28,6 +28,15 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 /// Adapter that wraps JsonMapper to implement JsonCodec interface.
 /// Bridges between Jackson-based JSON serialization and the `byte[]` codec seam.
 public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
+    private static final String SERIALIZATION_FAILED = "Serialization failed";
+
+    /// Every HTTP response body is written through an adapter, so this is where a failed `Result` or a `Cause` inside a
+    /// body is held to its client text (#3723): the wrapped mapper is [JsonMapper#clientFacing()] however the adapter was
+    /// made. The general mapper the caller passed (the CLI, cloud clients and state files use such mappers) is unchanged.
+    public JsonCodecAdapter {
+        mapper = mapper.clientFacing();
+    }
+
     /// Creates a JsonCodec adapter for the given JsonMapper.
     ///
     /// @param mapper The JsonMapper instance to wrap
@@ -47,11 +56,13 @@ public record JsonCodecAdapter(JsonMapper mapper) implements JsonCodec {
                                    .build());
     }
 
+    /// The text of a failed serialization is fixed (#3723): the mapper's failure message quotes the value and the
+    /// serializer's exception (class names, a reference chain), so the codec error never copies it into its own text. The
+    /// mapper's failure stays as the error's source, for the server-side cause chain.
     @Override
     public Result<byte[]> serialize(Object value) {
         return mapper.writeAsBytes(value)
-                     .mapError(cause -> CodecError.serializationFailed(cause.message(),
-                                                                       cause));
+                     .mapError(cause -> CodecError.serializationFailed(SERIALIZATION_FAILED, cause));
     }
 
     @Override

@@ -1,5 +1,7 @@
 package org.pragmatica.cluster.node.rabia;
 
+import java.util.Set;
+
 import org.pragmatica.consensus.net.ClusterFormationConfig;
 import org.pragmatica.consensus.net.JoinGenerationGuard;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
@@ -19,6 +21,14 @@ public interface NodeConfig {
     /// Production keeps the default; tests that boot with a member intentionally down shorten it.
     default TimeSpan joinGenerationWait() {
         return JoinGenerationGuard.JOIN_GENERATION_WAIT;
+    }
+
+    /// The labels whose values every core member must share (#3525): a node refuses to start when a handshaken core peer's value of
+    /// any of them differs from its own (an absent label differs from a present one), and casts no ballot until a quorum of the
+    /// core has handshaken. Consensus names none of them; the assembly that stamps a label into the node's Hello labels names it
+    /// here. The empty default requires nothing, so the join guard waits for nobody beyond the wire-generation bound.
+    default Set<String> agreeingLabels() {
+        return Set.of();
     }
 
     default ClusterFormationConfig clusterFormation() {

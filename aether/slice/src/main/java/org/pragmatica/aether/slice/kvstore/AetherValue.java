@@ -3238,15 +3238,33 @@ public sealed interface AetherValue {
     /// the counter, so two distinct rebalances never share an epoch. `assignedAt` is for operator diagnosis only,
     /// never for ordering.
     ///
-    /// @param epoch the rebalance this assignment belongs to; strictly increases from one rebalance to the next
-    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt, Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+    /// #3041: also [AssignmentTokenBearing] on `streamIncarnation`, the life of the stream the rebalance was derived for.
+    /// [AetherKey.ConsumerGroupKey] is guarded by the stream's committed [StreamConfigValue], so the applier admits this
+    /// value only while that very life is committed: a batch derived before the stream was deleted, or recreated, is
+    /// refused whatever its epoch.
+    ///
+    /// @param epoch             the rebalance this assignment belongs to; strictly increases from one rebalance to the next
+    /// @param streamIncarnation the committed incarnation of the stream life this assignment belongs to
+    record ConsumerGroupValue(NodeId assignedTo,
+                              String consumerId,
+                              long assignedAt,
+                              Epoch epoch,
+                              long streamIncarnation) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         @Override
         public Epoch fenceEpoch() {
             return epoch;
         }
 
-        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId, Epoch epoch) {
-            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch);
+        @Override
+        public Object guardToken() {
+            return streamIncarnation;
+        }
+
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo,
+                                                            String consumerId,
+                                                            Epoch epoch,
+                                                            long streamIncarnation) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch, streamIncarnation);
         }
     }
 
@@ -3254,28 +3272,45 @@ public sealed interface AetherValue {
     /// compares only against a committed value), so a rebalance batch derived before the last member left, committing
     /// after the clear, would resurrect the departed owner. The clear therefore WRITES this value at its freshly minted
     /// epoch for every partition: it shares [ConsumerGroupValue]'s fence kind (an `Epoch`), so the applier refuses any
-    /// older assignment `Put` over it, and the registry reads it as "no owner". It is reclaimed by the next rebalance of
-    /// the group, which mints a higher epoch and overwrites it; a group that never rebalances again keeps one such
-    /// entry per partition.
+    /// older assignment `Put` over it, and the registry reads it as "no owner".
     ///
-    /// @param epoch the clear this tombstone belongs to; strictly newer than every assignment it releases
-    record ConsumerGroupTombstone(Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+    /// #3041: the tombstone is the record that refuses an older join while its life is committed. Its
+    /// `streamIncarnation` names the stream life it was written for, and the key's stream guard refuses every write of
+    /// a life that is not the committed one: once the stream is deleted, or recreated as a new life, no older-epoch
+    /// join of the old life can commit, so the tombstone of a dead life refuses nothing the guard does not and may be
+    /// removed. While the life is committed it stays (the epoch fence refuses the older join) until the next
+    /// rebalance overwrites it.
+    ///
+    /// @param epoch             the clear this tombstone belongs to; strictly newer than every assignment it releases
+    /// @param streamIncarnation the committed incarnation of the stream life this tombstone belongs to
+    record ConsumerGroupTombstone(Epoch epoch, long streamIncarnation) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         @Override
         public Epoch fenceEpoch() {
             return epoch;
         }
 
-        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch) {
-            return new ConsumerGroupTombstone(epoch);
+        @Override
+        public Object guardToken() {
+            return streamIncarnation;
+        }
+
+        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch, long streamIncarnation) {
+            return new ConsumerGroupTombstone(epoch, streamIncarnation);
         }
     }
 
     /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
     /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
     /// the removal of the old life has applied.
-    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced {
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced, AssignmentTokenBearing {
         @Override
         public long fenceIncarnation() {
+            return config.incarnation();
+        }
+
+        /// #3041: the authority a [AetherKey.ConsumerGroupKey] write is checked against: the committed life of the stream.
+        @Override
+        public Object guardToken() {
             return config.incarnation();
         }
 

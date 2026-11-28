@@ -150,6 +150,7 @@ import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
+import org.pragmatica.aether.stream.consumer.StreamLives;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
 import org.pragmatica.aether.stream.replication.ReplicaSetController;
@@ -187,7 +188,6 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.ClusterSyncMessage;
 import org.pragmatica.consensus.net.quic.PeerConnectivityReporter;
 import org.pragmatica.cluster.node.SwitchableClusterNode;
-import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.rabia.RabiaPersistence;
 import org.pragmatica.cluster.state.kvstore.*;
@@ -795,10 +795,7 @@ public interface AetherNode extends ManageableNode {
 
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
-        var nodeConfig = NodeConfig.nodeConfig(config.protocol(),
-                                               config.topology(),
-                                               config.activationGated(),
-                                               config.clusterFormation());
+        var nodeConfig = BackupAgreement.nodeConfig(config);
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var leaderTerm = LeaderTerm.leaderTerm(config.self(),
                                                () -> kvStore.getTyped(LeaderKey.INSTANCE, LeaderValue.class));
@@ -991,10 +988,7 @@ public interface AetherNode extends ManageableNode {
     /// `[backup]` enabled with a path — the one condition for the backup service, its restore source, and
     /// the restore gate on this node's submit path.
     static Option<BackupConfig> enabledBackup(AetherNodeConfig config) {
-        return config.backupConfig()
-                     .filter(BackupConfig::enabled)
-                     .filter(backup -> !backup.path()
-                                              .isBlank());
+        return BackupAgreement.enabled(config.backupConfig());
     }
 
     /// #1533 — the central restore gate: on a backup-enabled node every batch this node submits to
@@ -2072,6 +2066,12 @@ public interface AetherNode extends ManageableNode {
                 // expires and then drains — by node id, against the LIVE registry, i.e. this node's NEXT
                 // incarnation.
                 quorumLossDetector.stop();
+                // #3754: the schema orchestrator's lease renewals and retry re-dispatches are on the same shared scheduler.
+                // Stop ends renewal and releases nothing: a lock held under a running script lapses by its TTL (at most
+                // LOCK_TTL_MS = 5 min), as after a crash. Releasing here would let another node start the same migration while
+                // this node's script may still run. Never at leader deactivation, where the lease keeps renewing for the script.
+                // The stop is the wiring's (engine-neutral, once): this file may not name the cluster manager for it (W-32).
+                deploymentWiring.stopSchemaOrchestrator(schemaOrchestrator());
                 // #642 stop-hook audit — the rest of the SharedScheduler-armed, node-scoped work that
                 // had no reachable cancel path. Each of these was still acting on behalf of a stopped
                 // node: re-announcing a governor roster into consensus, pinging as spokesman, sweeping
@@ -2850,6 +2850,8 @@ public interface AetherNode extends ManageableNode {
 
         dhtCapacityWarnings.operatorWarnings(operatorWarningSink);
         dhtNode.storage().capacityListener(dhtCapacityWarnings);
+        // #2136: the stuck-SYNCING voter warnings, raised by the core voter reconciler's evidence (built before this sink)
+        topologyManagerOut.stuckSyncingVoters().operatorWarnings(operatorWarningSink);
         // Phase-3 design 8: the deployment engine this node runs. ONE boot-token registry per process (shared below by SWIM and the QUIC
         // transport), read by the FSM2 routes at delivery; the engine marker guard; and the one place every engine-dependent hook is bound.
         var bootTokens = BootTokens.bootTokens(bootToken);
@@ -3008,7 +3010,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   .deployment()
                                                                                                   .transitionRetryDelay(),
                                                                                             currentGenerationEpochSupplier,
-                                                                                            deploymentWiring.replayEnd(kvStore));
+                                                                                            deploymentWiring.replayEnd(kvStore),
+                                                                                            deploymentWiring.nodeStop());
         // #1935: a declared stream consumer that cannot be registered reaches THIS node's event log.
         nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         configChangeFeed.setOperatorWarningSink(operatorWarningSink);
@@ -3072,7 +3075,8 @@ public interface AetherNode extends ManageableNode {
         var consumerGroupRegistry = ConsumerGroupRegistry.consumerGroupRegistry();
         var consumerGroupCoordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode,
                                                                                          consumerGroupRegistry,
-                                                                                         epochSources.leaderEpoch());
+                                                                                         epochSources.leaderEpoch(),
+                                                                                         StreamLives.committedIn(kvStore));
         var managementServerRef = new AtomicReference<Option<ManagementServer>>(Option.empty());
         // Hoisted before collectRouteEntries (Wave 9 Fix A): the PASSIVE→process-exit-drain bridge
         // routes through this detector's windowed path, so the route-collection needs the ref
@@ -3127,6 +3131,9 @@ public interface AetherNode extends ManageableNode {
                                                                                               communityDrain,
                                                                                               placementReconciler,
                                                                                               aetherEntries));
+        // #3743: a deposed leader's reconciler never evaluates again, so the loss of leadership itself ends its open stuck-SYNCING episodes.
+        aetherEntries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                    topologyManagerOut.stuckSyncingVoters()::onLeaderChange));
         DhtAssembly.dhtRoutes(new DhtAssembly.DhtRoutesInputs(config,
                                                               clusterNode,
                                                               dhtNode,
@@ -5176,7 +5183,11 @@ public interface AetherNode extends ManageableNode {
 
         dynamicConfigManager.onPresent(dcm -> dcm.onApplied(DEPLOYMENT_CONFIG_LISTENER, configApplied));
         kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupPut);
+        // #3041, F5: a record that arrives with a life other than the committed one is an orphan; the leader reclaims it.
+        kvRouterBuilder.onPut(AetherKey.ConsumerGroupKey.class, consumerGroupCoordinator::onConsumerGroupPut);
         kvRouterBuilder.onRemove(AetherKey.ConsumerGroupKey.class, consumerGroupRegistry::onConsumerGroupRemove);
+        // #3041: a committed stream delete ends the stream's life; the leader's coordinator reclaims the records of it.
+        kvRouterBuilder.onRemove(AetherKey.StreamConfigKey.class, consumerGroupCoordinator::onStreamConfigRemove);
         // #345 1b: feed the per-ownership-domain epoch high-water table from committed EpochBearing puts.
         // No onRemove — the high-water is monotonic by definition, so ownership/governor removes are intentionally ignored.
         kvRouterBuilder.onPut(AetherKey.GovernorAnnouncementKey.class,

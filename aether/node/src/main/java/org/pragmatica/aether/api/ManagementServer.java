@@ -316,7 +316,9 @@ class ManagementServerImpl implements ManagementServer {
     /// route sources are otherwise fire-and-forget, and this one outlived its node on the shared
     /// scheduler.
     private final AtomicReference<ApiKeyRoutes> apiKeyRoutesRef = new AtomicReference<>();
-    private final ManagementRouter router;
+    /// The assembled route table, or the cause that refused it (a route name registered twice). A refused table never serves:
+    /// [#start()] fails with the cause, so the node does not come up with one handler silently hiding another.
+    private final Result<ManagementRouter> router;
     private final StatusRoutes statusRoutes;
     private final JsonMapper probeJsonMapper;
     private final List<RouteHandler> legacyRoutes;
@@ -402,7 +404,7 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
                          NodeLifecycleRoutes.DrainPort drainPort,
                          NodeLifecycleRoutes.SliceFloor sliceFloor,
-                         Fn1<ManagementRouter, RouteSource[]> routerAssembly) {
+                         Fn1<Result<ManagementRouter>, RouteSource[]> routerAssembly) {
         this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
@@ -520,7 +522,7 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Package-visible so a test can ask the router this server actually assembled which handler each declared route resolves to
     /// (#1921). Not a second assembly: the same instance `dispatchManagementRequest` calls.
-    ManagementRouter router() {
+    Result<ManagementRouter> router() {
         return router;
     }
 
@@ -551,6 +553,11 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> start() {
+        return router.async()
+                     .flatMap(_ -> startListeners());
+    }
+
+    private Promise<Unit> startListeners() {
         log.info("Starting management server on port {} (protocol: {})", port, httpProtocol);
         if (httpProtocol.includesH1()) {
             return startH1Server().flatMap(_ -> httpProtocol.includesH3()
@@ -649,6 +656,11 @@ class ManagementServerImpl implements ManagementServer {
         beforePublish = hook;
     }
 
+    /// #3754 test seam: the resender [#stop()] must end.
+    ForwardReplyResender replyResenderForTest() {
+        return replyResender;
+    }
+
     private Promise<Unit> activateH1Server(HttpServer server) {
         onServerStarted(server);
 
@@ -681,6 +693,8 @@ class ManagementServerImpl implements ManagementServer {
 
     @Override
     public Promise<Unit> stop() {
+        // #3754: ends the lifetime of the reply re-sends, so none armed before this runs after it.
+        replyResender.stop();
         thresholdEvaluator.stop();
         statusWsPublisher.stop();
         eventWsPublisher.stop();
@@ -1401,7 +1415,7 @@ class ManagementServerImpl implements ManagementServer {
             return;
         }
 
-        if (router.handle(ctx, instrumented, authenticated)) {
+        if (router.map(table -> table.handle(ctx, instrumented, authenticated)).or(false)) {
             recordRequestMetrics(methodName, path, instrumented, startTime);
 
             return;
@@ -1415,8 +1429,36 @@ class ManagementServerImpl implements ManagementServer {
             }
         }
 
-        writeNotFound(instrumented, path);
+        writeUnmatched(ctx, instrumented);
         recordRequestMetrics(methodName, path, instrumented, startTime);
+    }
+
+    /// A path no route answers for this method. When the path is registered for OTHER methods the refusal is `405` with the
+    /// `Allow` list (RFC 9110 15.5.6), not `404`: `404` says the resource does not exist, and a client cannot tell a refused
+    /// write verb on a known path from a mistyped one. A path no method knows stays [#writeNotFound].
+    private static void writeUnmatched(HttpRequest ctx, ResponseWriter response) {
+        var allowed = allowedMethods(ctx.path());
+
+        if (allowed.isEmpty()) {
+            writeNotFound(response, ctx.path());
+
+            return;
+        }
+
+        response.header("Allow", allowed);
+        ProblemResponses.writeProblem(response,
+                                      HttpStatus.METHOD_NOT_ALLOWED,
+                                      "Method not allowed for " + ctx.path() + "; allowed: " + allowed,
+                                      ctx.path(),
+                                      ctx.requestId());
+    }
+
+    /// The methods the declared routes answer for `path`, in [HttpMethod] order, comma-separated; empty when none does.
+    private static String allowedMethods(String path) {
+        return Stream.of(HttpMethod.values())
+                     .filter(method -> ManagementRoute.match(method, path).isSuccess())
+                     .map(HttpMethod::name)
+                     .collect(Collectors.joining(", "));
     }
 
     /// The body shape (`File not found: <path>`, text/plain) is what the retired static-file fallback
@@ -1504,8 +1546,9 @@ class ManagementServerImpl implements ManagementServer {
     static Option<Cause> malformedForwardParam(MatchedRoute matched) {
         return switch (matched.route()
                               .target()) {
-            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id
-                                                                                                                                                                                           + "': " + cause.message())),
+            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(ManagementServerError.InvalidRequest.because("Invalid node id '" + id
+                                                                                                                                                                                               + "'",
+                                                                                                                                                                                                cause)),
                                                                                                                               _ -> Option.none()));
             case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched,
                                                                                                      partitionParamIndex);
@@ -1516,8 +1559,8 @@ class ManagementServerImpl implements ManagementServer {
     private static Option<Cause> malformedPartitionOwnerParam(MatchedRoute matched, int partitionParamIndex) {
         var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable,
                                                                                          () -> Integer.valueOf(raw))
-                                                                                   .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
-                                                                                                                                                  + "': not an integer")),
+                                                                                   .fold(_ -> Option.some(ManagementServerError.InvalidRequest.literal("Invalid partition '" + raw
+                                                                                                                                                      + "': not an integer")),
                                                                                          _ -> Option.none()));
 
         return partition.isPresent()
@@ -1529,7 +1572,7 @@ class ManagementServerImpl implements ManagementServer {
         return Option.all(matched.param("namespace"),
                           matched.param("stream"),
                           matched.param("version"))
-                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
+                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause)),
                                                                                                                  _ -> Option.none()));
     }
 
@@ -1651,8 +1694,8 @@ class ManagementServerImpl implements ManagementServer {
     private static Option<Cause> notListed(NodeId id, Map<NodeId, String> roster) {
         return roster.containsKey(id)
                ? Option.<Cause> none()
-               : Option.<Cause> some(new ManagementServerError.NotFound("Unknown node '" + id.id()
-                                                                       + "': not a cluster member"));
+               : Option.<Cause> some(ManagementServerError.NotFound.literal("Unknown node '" + id.id()
+                                                                           + "': not a cluster member"));
     }
 
     /// Forward unless THIS node is the partition's HRW owner (#1039). Short-circuits only the one case
@@ -1811,14 +1854,13 @@ class ManagementServerImpl implements ManagementServer {
                                               node.taskGroupOwnerResolver(),
                                               () -> nodeSupplier.get()
                                                                 .leader(),
-
         // Method reference, not a captured node: this forwarder is
         // built once and cached, so the owner must be re-read from
         // the CURRENT node on every dispatch. A captured `node`
         // would pin a membership view from forwarder-construction
         // time, which on this endpoint is the view least likely to
         // still be right (it is queried during failover).
-        this::resolvePartitionOwner);
+                                              this::resolvePartitionOwner);
         var wrapped = Option.<HttpForwarder> some(fwd);
 
         return mgmtForwarderRef.compareAndSet(existing, wrapped)
@@ -2130,7 +2172,7 @@ class ManagementServerImpl implements ManagementServer {
             return;
         }
 
-        if (router.handle(serverCtx, responseCapture, authenticated)) {
+        if (router.map(table -> table.handle(serverCtx, responseCapture, authenticated)).or(false)) {
             responseCapture.completion()
                            .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
                            .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));

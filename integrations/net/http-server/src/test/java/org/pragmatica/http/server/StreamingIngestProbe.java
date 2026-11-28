@@ -131,7 +131,7 @@ public final class StreamingIngestProbe {
     private static String overHttp3(RequestClassifier classifier, long size) throws Exception {
         var config = HttpServerConfig.httpServerConfig("probe-h3", 0).withClassifier(classifier);
         var server = Http3Server.create(config,
-                                        QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).unwrap(),
+                                        QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols()).flatMap(LiveTls::liveQuicTls).unwrap(),
                                         (_, writer) -> writer.okText("aggregated"))
                                 .await(timeSpan(10).seconds())
                                 .unwrap();

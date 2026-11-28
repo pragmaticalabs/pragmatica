@@ -1427,8 +1427,11 @@ class KvBackupServiceTest {
             var stopping = node.service().stopFlushed(DEADLINE);
 
             Thread.currentThread().interrupt();
-            scheduler.advance(0);
-            Thread.interrupted();
+            try {
+                scheduler.advance(0);
+            } finally {
+                Thread.interrupted();
+            }
             settle(stopping);
 
             assertThat(node.warnings()).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_COMMIT_FAILED);

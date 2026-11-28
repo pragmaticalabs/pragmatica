@@ -9,6 +9,7 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosEnabledResponse;
@@ -26,6 +27,8 @@ import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosController.ActiveChaosEvent;
 import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
 import org.pragmatica.aether.forge.simulator.ChaosEvent;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
@@ -98,7 +101,7 @@ public final class ChaosRoutes {
     }
 
     private static Route<NodeAddedResponse> addNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeAddedResponse> post("/add-node").toJson(_ -> addNode(cluster, eventLogger));
+        return Route.<NodeAddedResponse> post("/add-node").toJson(_ -> addNode(cluster::addNode, eventLogger));
     }
 
     private static Route<NodeActionResponse> killNodeRoute(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
@@ -269,17 +272,17 @@ public final class ChaosRoutes {
         return Promise.success(SuccessResponse.OK);
     }
 
-    private static Promise<NodeAddedResponse> addNode(EmberCluster cluster, Consumer<EventLogEntry> eventLogger) {
+    /// The cluster's add is a parameter so a test can make it fail with a throwable and read the event feed.
+    static Promise<NodeAddedResponse> addNode(Supplier<Promise<NodeId>> adder, Consumer<EventLogEntry> eventLogger) {
         eventLogger.accept(new EventLogEntry("ADD_NODE", "Adding new node to cluster"));
 
-        return cluster.addNode()
-                      .map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
-                      .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",
-                                                                               "Failed to add node: " + cause.message())));
+        return adder.get()
+                    .map(nodeId -> logAndBuildNodeAddedResponse(eventLogger, nodeId))
+                    .onFailure(cause -> eventLogger.accept(new EventLogEntry("ADD_NODE_FAILED",
+                                                                             "Failed to add node: " + HttpError.clientMessage(cause))));
     }
 
-    private static NodeAddedResponse logAndBuildNodeAddedResponse(Consumer<EventLogEntry> eventLogger,
-                                                                  org.pragmatica.consensus.NodeId nodeId) {
+    private static NodeAddedResponse logAndBuildNodeAddedResponse(Consumer<EventLogEntry> eventLogger, NodeId nodeId) {
         eventLogger.accept(new EventLogEntry("NODE_JOINED", "Node " + nodeId.id() + " joined the cluster"));
 
         return new NodeAddedResponse(true, nodeId.id(), "joining");

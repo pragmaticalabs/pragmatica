@@ -13,6 +13,7 @@ import java.util.stream.Collectors;
 
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -96,10 +97,12 @@ class IncarnationReaderTripwireTest {
     /// Main sources under `aether/` that mention `IncarnationSource`. Search space: every `.java` file under a `src/main/java` directory of the
     /// `aether` tree that contains this module.
     private static List<Path> aetherMainSourcesNamingAnIncarnationSource() {
-        try (var paths = Files.walk(nodeModule().getParent())) {
-            return paths.filter(path -> path.toString().contains("/src/main/java/") && path.toString().endsWith(".java"))
-                        .filter(IncarnationReaderTripwireTest::mentionsIncarnationSource)
-                        .toList();
+        try {
+            return SourceWalk.files(nodeModule().getParent())
+                             .stream()
+                             .filter(path -> path.toString().contains("/src/main/java/") && path.toString().endsWith(".java"))
+                             .filter(IncarnationReaderTripwireTest::mentionsIncarnationSource)
+                             .toList();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

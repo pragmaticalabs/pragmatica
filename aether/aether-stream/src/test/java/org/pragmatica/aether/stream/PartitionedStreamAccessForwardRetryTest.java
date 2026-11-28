@@ -99,7 +99,7 @@ class PartitionedStreamAccessForwardRetryTest {
     }
 
     /// PR-2f S2 wiring pin (know `e10cf838c9`): the typed GOVERNOR read consults
-    /// [StreamPartitionManager#behindCommittedOwner]. A REPLICA that holds the materialized partition (a local read succeeds,
+    /// [StreamPartitionManager#replicaStaleness]. A REPLICA that holds the materialized partition (a local read succeeds,
     /// so the `PARTITION_NOT_LOCAL` forward does not apply) and has no announcement from the owner forwards the read. Red
     /// when the probe is not wired into [PartitionedStreamAccess]'s router.
     @Test

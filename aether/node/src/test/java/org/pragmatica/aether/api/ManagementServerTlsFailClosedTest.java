@@ -28,6 +28,7 @@ import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.RETURNS_DEFAULTS;
@@ -59,7 +60,7 @@ class ManagementServerTlsFailClosedTest {
     @Test
     @Timeout(60)
     void start_unbuildableTls_failsBeforeAnyBind() throws IOException {
-        try (var held = new ServerSocket(0)) {
+        try (var held = HeldPort.tcp()) {
             var server = managementServerWithMissingCertificate(held.getLocalPort(), HttpProtocol.H1);
 
             var outcome = server.start().await(START_BOUND);

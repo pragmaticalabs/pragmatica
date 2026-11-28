@@ -1,7 +1,9 @@
 package org.pragmatica.jbct.format;
 
 import java.nio.file.Path;
+import java.util.regex.Pattern;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Cause;
@@ -15,9 +17,12 @@ import static org.pragmatica.jbct.format.JbctFormatter.jbctFormatter;
 /// or repeated import is accepted, a lost, added or changed one is refused) equal the input's. Unit rows drive
 /// [ContentGuard] with a hand-written
 /// "formatted" text, so they do not depend on any printer gap; the end-to-end rows push the five positions of #3691
-/// through the formatter.
+/// through the formatter. Since #3698 the printer keeps a comment at every one of them, so those rows pin that the
+/// comment is kept; a refusal can no longer be driven through the formatter (see the tripwire row).
 class ContentGuardTest {
     private static final String OK = "OK";
+    private static final String POS4_FORMATTED = "class A {\n    int f(boolean c) {\n        return c\n        // POS4\n               ? 1\n               : 2;\n    }\n}\n";
+    private static final String POS4_SOURCE = "class A {\n    int f(boolean c) {\n        return c // POS4\n               ? 1 : 2;\n    }\n}\n";
 
     // --- unit rows: what the guard accepts
 
@@ -183,31 +188,32 @@ class ContentGuardTest {
         assertThat(verdict(input, output)).contains("comment lost");
     }
 
-    // --- end-to-end rows: the five positions of #3691 (each is a printer gap at this base; the guard turns it into a refusal)
+    // --- end-to-end rows: the five positions of #3691. Each was a printer gap that the guard turned into a refusal;
+    // since #3698 the printer claims every comment before the code token that follows it, so each is kept.
 
     @Test
-    void position1_commentBeforeSemicolonOfChainedReturn_isRefusedNotDeleted() {
-        assertRefused("class A {\n    String f(Object o) {\n        return o.toString()\n                .trim() // POS1\n                ;\n    }\n}\n", "// POS1");
+    void position1_commentBeforeSemicolonOfChainedReturn_isKeptNotDeleted() {
+        assertKept("class A {\n    String f(Object o) {\n        return o.toString()\n                .trim() // POS1\n                ;\n    }\n}\n", "// POS1");
     }
 
     @Test
-    void position2_commentBeforeSemicolonOfLocalInitializer_isRefusedNotDeleted() {
-        assertRefused("class A {\n    void f(Object o) {\n        var x = o.toString() // POS2\n                ;\n    }\n}\n", "// POS2");
+    void position2_commentBeforeSemicolonOfLocalInitializer_isKeptNotDeleted() {
+        assertKept("class A {\n    void f(Object o) {\n        var x = o.toString() // POS2\n                ;\n    }\n}\n", "// POS2");
     }
 
     @Test
-    void position3_commentAfterLeftOperandOfBinaryExpression_isRefusedNotDeleted() {
-        assertRefused("class A {\n    int f(int a, int b) {\n        return a // POS3\n               + b;\n    }\n}\n", "// POS3");
+    void position3_commentAfterLeftOperandOfBinaryExpression_isKeptNotDeleted() {
+        assertKept("class A {\n    int f(int a, int b) {\n        return a // POS3\n               + b;\n    }\n}\n", "// POS3");
     }
 
     @Test
-    void position4_commentAfterTernaryCondition_isRefusedNotDeleted() {
-        assertRefused("class A {\n    int f(boolean c) {\n        return c // POS4\n               ? 1 : 2;\n    }\n}\n", "// POS4");
+    void position4_commentAfterTernaryCondition_isKeptNotDeleted() {
+        assertKept(POS4_SOURCE, "// POS4");
     }
 
     @Test
-    void position5_commentAfterTernaryTrueArm_isRefusedNotDeleted() {
-        assertRefused("class A {\n    int f(boolean c) {\n        return c ? 1 // POS5\n                 : 2;\n    }\n}\n", "// POS5");
+    void position5_commentAfterTernaryTrueArm_isKeptNotDeleted() {
+        assertKept("class A {\n    int f(boolean c) {\n        return c ? 1 // POS5\n                 : 2;\n    }\n}\n", "// POS5");
     }
 
     @Test
@@ -221,23 +227,39 @@ class ContentGuardTest {
 
     @Test
     void refusalNamesTheFileAndTheInputLine() {
-        var message = message(jbctFormatter().format(file("class A {\n    int f(boolean c) {\n        return c // POS4\n               ? 1 : 2;\n    }\n}\n")));
+        var withoutTheComment = POS4_SOURCE.replace(" // POS4", "");
 
-        assertThat(message).startsWith("Formatter refused Test.java: comment lost: `// POS4` (input line 3)");
+        assertThat(verdict(POS4_SOURCE, withoutTheComment))
+            .startsWith("Formatter refused Test.java: comment lost: `// POS4` (input line 3)")
+            .endsWith("the file was left untouched");
     }
 
+    /// TRIPWIRE (#3698): no input drives a refusal through the formatter while the printer keeps every comment, so
+    /// the end-to-end refusal rows are disabled. This row asserts the current behaviour. When it goes red the printer
+    /// loses a comment again: enable `isFormatted_ofARefusedFile_isAFailureNotFalse` here and `row_G1`, `row_G2`,
+    /// `row_G3` in jbct-lint's `RunActionTableTest` (their `LOSES_A_COMMENT` source is this one), and re-pin.
+    @Test
+    void tripwire_theFormatterKeepsPos4_soTheEndToEndRefusalRowsStayDisabled() {
+        var result = jbctFormatter().format(file(POS4_SOURCE));
+
+        assertThat(result.isSuccess()).as("the printer lost the comment again: enable the refusal rows named in this javadoc: " + message(result)).isTrue();
+        assertThat(result.unwrap().content()).as("the printer changed where it prints the POS4 comment: if the comment is lost, enable the refusal rows named in this javadoc; otherwise re-pin")
+                                             .isEqualTo(POS4_FORMATTED);
+    }
+
+    @Disabled("Needs a printer gap: the formatter keeps POS4 since #3698. Enable when the tripwire row goes red.")
     @Test
     void isFormatted_ofARefusedFile_isAFailureNotFalse() {
-        var result = jbctFormatter().isFormatted(file("class A {\n    int f(boolean c) {\n        return c // POS4\n               ? 1 : 2;\n    }\n}\n"));
+        var result = jbctFormatter().isFormatted(file(POS4_SOURCE));
 
         assertThat(result.isFailure()).isTrue();
     }
 
-    private static void assertRefused(String source, String comment) {
-        var message = message(jbctFormatter().format(file(source)));
+    private static void assertKept(String source, String comment) {
+        var result = jbctFormatter().format(file(source));
 
-        assertThat(message).startsWith("Formatter refused Test.java: comment lost: `" + comment + "`")
-                           .endsWith("the file was left untouched");
+        assertThat(result.isSuccess()).as(message(result)).isTrue();
+        assertThat(result.unwrap().content().split(Pattern.quote(comment), -1)).as("`%s` appears exactly once", comment).hasSize(2);
     }
 
     private static String verdict(String input, String output) {

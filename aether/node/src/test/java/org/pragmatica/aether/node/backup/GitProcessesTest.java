@@ -16,13 +16,17 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.pragmatica.lang.Option;
@@ -78,6 +82,42 @@ class GitProcessesTest {
         assertThat(children).noneMatch(ProcessHandle::isAlive);
     }
 
+    /// `true` from `kill` means the `Process` of every root reads exited, not only its handle: the JDK completes the handle's exit and the `Process`'s in
+    /// separate stages, and a caller that read `isAlive` right after `true` found the root alive (#3841: 2 of 12000 kills on a loaded host, with a real
+    /// process). The stub models the gap deterministically: its handle exits at once, its `Process` only once it is waited on.
+    @Test
+    void kill_isTrueOnlyOnceTheRootProcessItselfReadsExited() {
+        var exited = new AtomicBoolean();
+        var root = exitingOnlyWhenWaitedOn(mortalHandle(0), exited);
+
+        assertThat(GitProcesses.kill(List.of(root), 10_000)).isTrue();
+        assertThat(root.isAlive()).as("the root Process reads exited when kill answers true").isFalse();
+    }
+
+    /// An interrupt that lands in the wait for a root's `Process` does not end that wait: the kill goes on to the root's exit, answers true, and the
+    /// caller's thread still carries the interrupt (the same contract as the wait for the handles).
+    @Test
+    void kill_keepsAnInterrupt_thatLandsInTheRootProcessWait() {
+        var root = interruptedOnFirstWait(exitingOnlyWhenWaitedOn(mortalHandle(0), new AtomicBoolean()));
+        var dead = GitProcesses.kill(List.of(root), 10_000);
+        var stillInterrupted = Thread.interrupted();
+
+        assertThat(dead).as("the wait went on after the interrupt").isTrue();
+        assertThat(root.isAlive()).as("the root Process reads exited").isFalse();
+        assertThat(stillInterrupted).as("the interrupt flag survives the kill").isTrue();
+    }
+
+    /// The wait for a root's `Process` is held to the kill's bound: a root whose handle has exited but whose `Process` never reads exited is reported as
+    /// not dead when the bound runs out, instead of holding the caller.
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_reportsFalse_whenTheRootProcessNeverReadsExited() {
+        var started = System.nanoTime();
+
+        assertThat(GitProcesses.kill(List.of(neverExiting(mortalHandle(0))), 300)).isFalse();
+        assertThat(System.nanoTime() - started).as("the kill waited out its bound").isGreaterThanOrEqualTo(250_000_000L);
+    }
+
     /// A bound that cannot be met is reported as not dead, so the stop can say so instead of claiming a clean stop. The member here can never end, so the
     /// outcome does not depend on how fast the host reaps a killed process (a real process killed under a bound of zero may already be gone).
     @Test
@@ -105,8 +145,14 @@ class GitProcessesTest {
         var handle = undyingHandle(Stream::empty);
 
         Thread.currentThread().interrupt();
-        var dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 300_000_000L);
-        var stillInterrupted = Thread.interrupted();
+        boolean dead;
+        boolean stillInterrupted;
+
+        try {
+            dead = GitProcesses.awaitDead(Set.of(handle), System.nanoTime() + 300_000_000L);
+        } finally {
+            stillInterrupted = Thread.interrupted();
+        }
 
         assertThat(dead).as("a member that is alive is not dead").isFalse();
         assertThat(stillInterrupted).as("the interrupt flag survives the wait").isTrue();
@@ -122,8 +168,14 @@ class GitProcessesTest {
             var children = awaitChildren(root, 2);
 
             Thread.currentThread().interrupt();
-            var dead = GitProcesses.kill(List.of(root), 5_000);
-            var stillInterrupted = Thread.interrupted();
+            boolean dead;
+            boolean stillInterrupted;
+
+            try {
+                dead = GitProcesses.kill(List.of(root), 5_000);
+            } finally {
+                stillInterrupted = Thread.interrupted();
+            }
 
             assertThat(dead).as("round " + round + ": the tree is dead, and kill says so under a set interrupt").isTrue();
             assertThat(stillInterrupted).as("round " + round + ": the interrupt flag is restored").isTrue();
@@ -197,29 +249,78 @@ class GitProcessesTest {
     }
 
     /// A member that joins a root's tree only after the freeze's last read (a fork that completed in the kernel after the read) is killed too, and so
-    /// is one that joins after that sweep's own read: the roots' trees are read again, before the roots are killed, until a read adds nothing (#2979,
-    /// fork-window mechanism). The root reports no child on its first read, one child on its second and two on every later one.
+    /// is one that joins after the sweep's own kill: the roots' trees are read again, before the roots are killed, until a read adds nothing (#2979,
+    /// fork-window mechanism). The invariant is behavioural: every member that joined before the sweep's last read is dead, and that read added nothing.
+    /// The joins are scripted (see [LateJoiners]), so the number of reads follows from the script, not from the host's speed (#3802).
     @Test
     @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void kill_killsTheMembersThatJoinAfterTheFreezesLastRead_untilAReadAddsNothing() {
-        var reads = new AtomicInteger();
-        var first = mortalHandle(0);
-        var second = mortalHandle(0);
-        var root = mortalHandle(0, () -> childrenAtRead(reads.incrementAndGet(), first, second));
-
-        assertThat(GitProcesses.kill(List.of(processOf(root)), 5_000)).as("the whole tree is dead").isTrue();
-        assertThat(first.isAlive()).as("the member found after the freeze is killed").isFalse();
-        assertThat(second.isAlive()).as("the member found after the sweep's first read is killed").isFalse();
-        assertThat(root.isAlive()).as("the root is killed").isFalse();
-        assertThat(reads.get()).as("the sweep read until a read added nothing").isGreaterThanOrEqualTo(4);
+        assertSweepEndsOnAReadThatAddsNothing(0);
     }
 
-    private static Stream<ProcessHandle> childrenAtRead(int read, ProcessHandle first, ProcessHandle second) {
-        return switch (read) {
-            case 1 -> Stream.empty();
-            case 2 -> Stream.of(first);
-            default -> Stream.of(first, second);
-        };
+    /// The same sweep on a host that is slow to read: every read takes a second, which is more than the five-second bound's freeze half allows for the
+    /// whole script. The outcome does not change (#3802: the sweep stopped after three reads on a loaded host).
+    @Test
+    @Timeout(value = 30, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void kill_killsTheMembersThatJoinAfterTheFreezesLastRead_whenEveryReadIsSlow() {
+        assertSweepEndsOnAReadThatAddsNothing(1_000);
+    }
+
+    private static void assertSweepEndsOnAReadThatAddsNothing(long readMillis) {
+        var joiners = new LateJoiners(readMillis);
+        var root = mortalHandle(0, joiners::read);
+
+        assertThat(GitProcesses.kill(List.of(processOf(root)), UNHURRIED_BOUND_MILLIS)).as("the whole tree is dead").isTrue();
+        assertThat(joiners.joined()).as("control: the member that joins after the sweep's kill was read").contains(joiners.late);
+        assertThat(joiners.joined()).as("every member that joined before the last read is dead").allMatch(member -> !member.isAlive());
+        assertThat(root.isAlive()).as("the root is killed").isFalse();
+        assertThat(joiners.lastReadAddedNothing()).as("the sweep stopped only after a read that added no member").isTrue();
+    }
+
+    /// A kill's bound that no host reaches: the freeze and the sweep give up at half of it, so a test that must not race the clock passes it.
+    private static final long UNHURRIED_BOUND_MILLIS = 120_000;
+
+    /// The roots' tree as the sweep reads it, scripted: the first read finds nothing, the second one member, the third and later two, and a third joins
+    /// only after the second has been killed (released by its kill, not by time), so it is found by a read that follows the sweep's kill. Each read
+    /// takes `readMillis`, and its result is kept: a read added nothing when it returns only members an earlier read returned.
+    private static final class LateJoiners {
+        private final long readMillis;
+        private final AtomicBoolean secondKilled = new AtomicBoolean();
+        private final List<Set<ProcessHandle>> reads = new CopyOnWriteArrayList<>();
+        final ProcessHandle first = mortalHandle(2_000_000_021L, 0, Stream::empty, GitProcessesTest::nothing);
+        final ProcessHandle second = mortalHandle(2_000_000_022L, 0, Stream::empty, () -> secondKilled.set(true));
+        final ProcessHandle late = mortalHandle(2_000_000_023L, 0, Stream::empty, GitProcessesTest::nothing);
+
+        LateJoiners(long readMillis) {
+            this.readMillis = readMillis;
+        }
+
+        Stream<ProcessHandle> read() {
+            sleepFor(readMillis);
+            var members = membersAtRead(reads.size() + 1);
+
+            reads.add(members);
+
+            return members.stream();
+        }
+
+        private Set<ProcessHandle> membersAtRead(int read) {
+            return switch (read) {
+                case 1 -> Set.of();
+                case 2 -> Set.of(first);
+                default -> secondKilled.get() ? Set.of(first, second, late) : Set.of(first, second);
+            };
+        }
+
+        Set<ProcessHandle> joined() {
+            return reads.stream().flatMap(Set::stream).collect(Collectors.toSet());
+        }
+
+        boolean lastReadAddedNothing() {
+            var earlier = reads.subList(0, Math.max(0, reads.size() - 1)).stream().flatMap(Set::stream).collect(Collectors.toSet());
+
+            return reads.size() > 1 && earlier.containsAll(reads.getLast());
+        }
     }
 
     /// An interrupt that lands while the freeze helper runs does not kill the helper: the freeze completes (the helper leaves its mark), the tree is
@@ -671,7 +772,84 @@ class GitProcessesTest {
             @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
             @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
             @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return exitSeen(handle, timeout, unit); }
             @Override public int exitValue() { throw new IllegalThreadStateException("undying"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
+    }
+
+    /// Whether the handle's exit completes within the timeout: the stub `Process` exits when its handle does.
+    private static boolean exitSeen(ProcessHandle handle, long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            handle.onExit().get(timeout, unit);
+
+            return true;
+        } catch (TimeoutException stillRunning) {
+            return false;
+        } catch (ExecutionException exitedWithFailure) {
+            return true;
+        }
+    }
+
+    /// A `Process` of `handle` that never reads exited: its timed wait runs out its timeout and answers false.
+    private static Process neverExiting(ProcessHandle handle) {
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return runOut(timeout, unit); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("running"); }
+            @Override public void destroy() {}
+            @Override public ProcessHandle toHandle() { return handle; }
+        };
+    }
+
+    private static boolean runOut(long timeout, TimeUnit unit) throws InterruptedException {
+        try {
+            new CompletableFuture<Boolean>().get(timeout, unit);
+
+            return true;
+        } catch (TimeoutException ranOut) {
+            return false;
+        } catch (ExecutionException failed) {
+            return true;
+        }
+    }
+
+    /// `inner`, except that its first timed wait is interrupted.
+    private static Process interruptedOnFirstWait(Process inner) {
+        var interrupted = new AtomicBoolean();
+
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return inner.getOutputStream(); }
+            @Override public InputStream getInputStream() { return inner.getInputStream(); }
+            @Override public InputStream getErrorStream() { return inner.getErrorStream(); }
+            @Override public int waitFor() throws InterruptedException { return inner.waitFor(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { return interrupted.compareAndSet(false, true) ? interrupt() : inner.waitFor(timeout, unit); }
+            @Override public boolean isAlive() { return inner.isAlive(); }
+            @Override public int exitValue() { return inner.exitValue(); }
+            @Override public void destroy() { inner.destroy(); }
+            @Override public ProcessHandle toHandle() { return inner.toHandle(); }
+        };
+    }
+
+    private static boolean interrupt() throws InterruptedException {
+        throw new InterruptedException("first wait");
+    }
+
+    /// A `Process` whose handle exits as `handle` says, but which itself reads exited (`isAlive` false) only once it has been waited on: the JDK's two exit
+    /// stages, the handle's and the `Process`'s, with the handle's seen first and the `Process`'s not before something waits for it (#3841).
+    private static Process exitingOnlyWhenWaitedOn(ProcessHandle handle, AtomicBoolean exited) {
+        return new Process() {
+            @Override public OutputStream getOutputStream() { return OutputStream.nullOutputStream(); }
+            @Override public InputStream getInputStream() { return InputStream.nullInputStream(); }
+            @Override public InputStream getErrorStream() { return InputStream.nullInputStream(); }
+            @Override public int waitFor() { throw new UnsupportedOperationException(); }
+            @Override public boolean waitFor(long timeout, TimeUnit unit) throws InterruptedException { var seen = exitSeen(handle, timeout, unit); exited.set(seen); return seen; }
+            @Override public boolean isAlive() { return !exited.get(); }
+            @Override public int exitValue() { throw new IllegalThreadStateException("running"); }
             @Override public void destroy() {}
             @Override public ProcessHandle toHandle() { return handle; }
         };

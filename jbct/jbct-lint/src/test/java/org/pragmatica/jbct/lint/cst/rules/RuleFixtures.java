@@ -633,11 +633,11 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-ARCH-01: dependency direction — a domain file importing an adapter package.
+        // JBCT-ARCH-01: a domain file importing a framework package.
         fixture("JBCT-ARCH-01", 2,
                 """
                 package com.example.domain.user;
-                import com.example.adapter.persistence.Row;
+                import org.springframework.stereotype.Component;
                 class User {
                 }
                 """,
@@ -682,18 +682,31 @@ final class RuleFixtures {
                 }
                 """),
 
-        // JBCT-ARCH-04: importing another slice's internal package (a different slice's non-root).
-        fixture("JBCT-ARCH-04", 2,
+        // JBCT-TREE-01: a workflow importing its sibling workflow (the harness tree is rooted at com.example).
+        fixture("JBCT-TREE-01", 2,
                 """
-                package com.example.usecase.registeruser;
-                import com.example.usecase.loginuser.internal.Token;
-                class RegisterUser {
+                package com.example.login;
+                import com.example.register.Account;
+                class Login {
                 }
                 """,
                 """
-                package com.example.usecase.registeruser;
-                import com.example.usecase.registeruser.internal.Token;
-                class RegisterUser {
+                package com.example.login;
+                import com.example.shared.Money;
+                class Login {
+                }
+                """),
+
+        // JBCT-TREE-02: a file declared outside the harness tree's root com.example.
+        fixture("JBCT-TREE-02", 1,
+                """
+                package org.other;
+                class Stray {
+                }
+                """,
+                """
+                package com.example.login;
+                class Login {
                 }
                 """),
 

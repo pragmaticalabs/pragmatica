@@ -104,7 +104,16 @@ cd /tmp/aether-build
 # Always regenerate Dockerfile (base image may have changed)
 if true; then
 cat > Dockerfile.local << 'DFILE'
-FROM eclipse-temurin:25-noble
+# #3806 (CVE-2026-114938, Java4Shell): the base is pinned to a Temurin build at or above JDK_FLOOR, and the build FAILS if the JDK
+# inside is below it (an unreadable version fails too). JDK_FLOOR is asserted equal to JvmVulnerabilityGate.JDK_FLOOR by
+# JdkFloorPinnedTest; override JDK_BASE only to take a newer JDK.
+ARG JDK_BASE=eclipse-temurin:25.0.5.1_2-jdk-noble
+ARG JDK_FLOOR=25.0.5.1
+
+FROM \${JDK_BASE}
+
+ARG JDK_FLOOR
+RUN v="\$(java -XshowSettings:properties -version 2>&1 | sed -n 's/^ *java.version = //p')"; [ -n "\$v" ] && [ "\$(printf '%s\n%s\n' "\$JDK_FLOOR" "\$v" | sort -V | head -n1)" = "\$JDK_FLOOR" ] || { echo "JDK \${v:-unknown} is below \$JDK_FLOOR (CVE-2026-114938, Java4Shell)" >&2; exit 1; }
 
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
 RUN usermod -l aether -d /home/aether -m ubuntu && groupmod -n aether ubuntu

@@ -6,6 +6,7 @@
 package org.pragmatica.aether.node;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.locks.LockSupport;
@@ -33,6 +34,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -88,7 +90,7 @@ class StreamSealerWiringBootTest {
         awaitCondition(() -> sealer.lowestUnsealed(STREAM, PARTITION).isEmpty(), 3_000, "the run of 10 evictions sealed (seal_run_events = 10)");
 
         IntStream.range(RING_EVENTS + RUN_EVENTS, RING_EVENTS + RUN_EVENTS + 5).forEach(i -> publish(manager, i));
-        LockSupport.parkNanos(500_000_000L);
+        Pause.pause(Duration.ofMillis(500));
         assertThat(sealer.lowestUnsealed(STREAM, PARTITION)).as("control: five evictions are below every threshold")
                                                            .isEqualTo(Option.some((long) RUN_EVENTS));
         assertThat(sealer.armedTimers()).as("control: the partition waits on its age timer").isEqualTo(1);

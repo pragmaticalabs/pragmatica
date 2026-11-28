@@ -10,7 +10,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Pattern;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
@@ -81,21 +80,17 @@ class CommunityObservabilityForgeTest {
         var workers = admitWorkers();
         var community = communityOf(workers.getFirst());
 
-        await().atMost(BUDGET.duration())
-             .until(() -> field(communityJson(community),
-                                "state").equals(Option.some("ACTIVE")) && field(communityJson(community),
-                                                                                "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+        awaitActiveAndWhole(community);
         await().atMost(BUDGET.duration()).untilAsserted(() -> assertFormationEvents(community, workers));
         var victim = nonGovernor(community, workers);
 
         LifecycleAwait.nodeSettled("kill worker " + victim.id(),
                                    cluster,
                                    cluster.killNode(victim.id(), false));
-        await().atMost(BUDGET.duration())
-             .until(() -> field(communityJson(community),
-                                "state").equals(Option.some("DEGRADED")));
-        // An absent liveMembers reads as WORKERS, so it fails the bound rather than passing vacuously.
-        assertThat(field(communityJson(community), "liveMembers").map(Integer::parseInt).or(WORKERS)).isLessThan(WORKERS);
+        // #3812: `state` is the committed row and `liveMembers` the leader's live count: the route promises each its own value eventually and no
+        // relation between them (the committed state follows the count by a consensus round), so each is awaited alone, never as a pair.
+        CommunityAwaits.awaitState(() -> communityJson(community), "DEGRADED", BUDGET.duration());
+        CommunityAwaits.awaitLiveMembersBelow(() -> communityJson(community), WORKERS, BUDGET.duration());
         await().atMost(BUDGET.duration())
              .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
         // #1717: the dead worker leaves every committed surface, and the leave is announced.
@@ -109,10 +104,7 @@ class CommunityObservabilityForgeTest {
         // Recovery: a replacement worker makes the community whole again, and the transition is announced.
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
 
-        await().atMost(BUDGET.duration())
-             .until(() -> field(communityJson(community),
-                                "state").equals(Option.some("ACTIVE")) && field(communityJson(community),
-                                                                                "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+        awaitActiveAndWhole(community);
         await().atMost(BUDGET.duration())
              .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from",
                                                                                                                                     "DEGRADED")
@@ -231,11 +223,8 @@ class CommunityObservabilityForgeTest {
                      .or("");
     }
 
-    private static Option<String> field(String json, String name) {
-        var matcher = Pattern.compile("\"" + name + "\":\"?([A-Za-z0-9_-]+)\"?").matcher(json);
-
-        return matcher.find()
-               ? Option.some(matcher.group(1))
-               : Option.none();
+    private void awaitActiveAndWhole(String community) {
+        CommunityAwaits.awaitState(() -> communityJson(community), "ACTIVE", BUDGET.duration());
+        CommunityAwaits.awaitLiveMembersEqual(() -> communityJson(community), WORKERS, BUDGET.duration());
     }
 }

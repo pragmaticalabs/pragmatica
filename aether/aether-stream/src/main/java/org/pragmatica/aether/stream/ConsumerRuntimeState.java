@@ -168,6 +168,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// never land after the successor's own commits and move the group's cursor backwards.
     private final ConcurrentHashMap<ConsumerKey, PendingDetaches> pendingDetachFlushes = new ConcurrentHashMap<>();
 
+    /// #3283: the consumer state holding each key's open `stream-consumer-cursor-unreadable` episode. The episode belongs to
+    /// the key, not to one consumer: a successor re-subscribed during the same outage (a new assignment epoch, a restart for
+    /// a rewind) takes it over without a second raise. Only a live state that starts closes it, or a cancelled or closed
+    /// state that still holds it ([#applyCursorAndStart]).
+    private final ConcurrentHashMap<ConsumerKey, ConsumerState> cursorFetchEpisodes = new ConcurrentHashMap<>();
+
     /// One promise and a counter per key, never a chain of promises: resolving a nested chain recurses once per link
     /// (v-str-1914 N1: a StackOverflowError at ~20k links), this is O(1) however many detaches pile up. The counter is
     /// touched only inside `compute`, which is atomic per key.
@@ -778,6 +784,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                      ConsumerKey key,
                                      ConsumerState state,
                                      int attempt) {
+        if (closed.get() || state.isCancelled()) {
+            endCursorFetchEpisodeOnCancel(key, state);
+
+            return;
+        }
+
         result.onSuccess(cursor -> startFromCursor(key, state, cursor))
               .onFailure(cause -> retryCursorFetch(store, key, state, attempt, cause));
     }
@@ -790,6 +802,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         state.clearAwaitingCursorFetch();
         cursor.onPresent(state::resumeAt);
         startConsumer(key, state);
+        endCursorFetchEpisode(key, state);
     }
 
     @Contract
@@ -798,10 +811,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                   ConsumerState state,
                                   int attempt,
                                   Cause cause) {
-        if (closed.get() || state.isCancelled()) {
-            return;
-        }
-
         LOG.log(System.Logger.Level.WARNING,
                 "Cursor fetch for consumer group {0} on {1}[{2}] failed (attempt {3}); retrying before start: {4}",
                 key.groupId(),
@@ -809,8 +818,70 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                 key.partition(),
                 attempt,
                 cause.message());
+        openCursorFetchEpisode(key, state, cause);
         SharedScheduler.schedule(() -> fetchCursorAndStart(store, key, state, attempt + 1),
                                  TimeSpan.timeSpan(computeBackoff(Math.min(attempt, 30))).millis());
+    }
+
+    /// #3283: a failed fetch of a live state makes it the key's holder. Raised only when no state held the episode: a
+    /// successor whose fetch fails while its predecessor's episode is open takes that episode over.
+    @Contract
+    void openCursorFetchEpisode(ConsumerKey key, ConsumerState state, Cause cause) {
+        if (cursorFetchEpisodes.put(key, state) == null) {
+            reportCursorUnreadable(key, cause);
+        }
+    }
+
+    /// #3283: a state that started closes the key's episode, whichever state opened it. One cancelled between its fetch and
+    /// its start did not start, so it closes the episode as a cancelled state does.
+    /// Package-private with [#openCursorFetchEpisode]: that window lies between two cancel checks, so only
+    /// `ConsumerCursorFetchEpisodeTest` can force it.
+    @Contract
+    void endCursorFetchEpisode(ConsumerKey key, ConsumerState state) {
+        if (!state.cursorInitialized()) {
+            endCursorFetchEpisodeOnCancel(key, state);
+        } else if (cursorFetchEpisodes.remove(key) != null) {
+            reportCursorReadable(key, "a fetch read the cursor and the consumer started from it");
+        }
+    }
+
+    /// #3283: a cancelled or closed state closes the episode only while it still holds it; one taken over by a successor
+    /// stays open for the successor. It never reports a start: it does not start.
+    @Contract
+    private void endCursorFetchEpisodeOnCancel(ConsumerKey key, ConsumerState state) {
+        if (cursorFetchEpisodes.remove(key, state)) {
+            reportCursorReadable(key,
+                                 "the consumer was cancelled while its fetch was failing; it no longer retries here");
+        }
+    }
+
+    /// #3283: once per episode of a key ([#openCursorFetchEpisode]); [#reportCursorReadable] closes it. Between the two, no
+    /// consumer of the key has started: every holder's fetch failed, and a state that started would have closed it.
+    @Contract
+    private void reportCursorUnreadable(ConsumerKey key, Cause cause) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] has not started: its cursor fetch failed and is retried with backoff; it "
+                              + "does not start at the reset point instead: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               cause.message());
+    }
+
+    @Contract
+    private void reportCursorReadable(ConsumerKey key, String outcome) {
+        OperatorWarnings.raise(WARNINGS_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] cursor fetch is no longer failing: {}",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               outcome);
     }
 
     private void startConsumer(ConsumerKey key, ConsumerState state) {

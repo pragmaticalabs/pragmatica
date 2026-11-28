@@ -72,6 +72,11 @@
             <artifactId>test-logging</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>testing</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

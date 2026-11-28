@@ -236,6 +236,7 @@ public final class EmberCluster {
     private final AtomicReference<Option<Path>> dataBaseDir = new AtomicReference<>(Option.none());
     /// Opt-in restart-stable consensus state for recovery tests; retained across stop/start.
     private final AtomicReference<Option<KvBackup>> kvBackup = new AtomicReference<>(Option.none());
+    private volatile Set<String> kvBackupOff = Set.of();
     /// #1212 — where this instance's nodes keep their durable first-boot markers when the test did
     /// not opt into [#withDataBaseDir]. Created ONCE per `EmberCluster` instance and deliberately
     /// NOT cleaned by [#stop], because that is exactly what gives the marker its meaning here:
@@ -555,8 +556,19 @@ public final class EmberCluster {
 
     private record KvBackup(Path baseDir, String remote, BackupConfig.RestoreMode restore) {}
 
+    /// TEST SEAM (#3525 L2) — the nodes named here run with `[backup]` OFF whatever [#withKvBackup] says: the one-node-disagrees core
+    /// the cluster's label agreement must refuse. Applies to nodes created from now on; empty (the default) = every node follows
+    /// [#withKvBackup]. Harness-scoped.
+    @Contract
+    public Unit withoutKvBackupOn(Set<String> nodeIds) {
+        kvBackupOff = Set.copyOf(nodeIds);
+
+        return Unit.unit();
+    }
+
     private Option<BackupConfig> kvBackupConfig(NodeId nodeId) {
         return kvBackup.get()
+                       .filter(_ -> !kvBackupOff.contains(nodeId.id()))
                        .map(backup -> BackupConfig.backupConfig(true,
                                                                 backup.baseDir().resolve(nodeId.id()).toString(),
                                                                 backup.remote(),
@@ -2019,29 +2031,24 @@ public final class EmberCluster {
                                           perNodeStorageConfig(nodeId),
                                           kvBackupConfig(nodeId),
                                           membership,
-
         // membership-config override: raised split-timeout ONLY for the #491 pinned convergence variant
         // (via withRaisedSwimTimeouts); otherwise none — forge nodes use MembershipConfig defaults
-        streamingConfigOf(nodeId),
+                                          streamingConfigOf(nodeId),
                                           ClusterFormationConfig.defaults(),
-
         // #298 — in-process nodes never pass through Main, so no cluster
         // name is stamped and the fleet cap stays inert here. Forge has no
         // cloud provider to cap in the first place.
-        Option.empty(),
-
+                                          Option.empty(),
         // #253 — forge/Ember nodes don't exercise storage encryption; opt-in only.
-        Option.empty(),
-
+                                          Option.empty(),
         // #957 — no [alerts] section in-process; AlertManager falls back to the shipped
         // defaults (damping at AlertConfig.DEFAULT_HYSTERESIS_MARGIN, webhooks disabled).
-        Option.empty(),
-
+                                          Option.empty(),
         // #980 — the SAME secret the certificate provider two statements up was built from, so an
         // in-process node derives its bootstrap admin key exactly as a production node does rather
         // than falling back to a random one. An Ember harness that diverged here would be a fixture
         // encoding different behaviour from the code it exists to exercise.
-        Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(engineOf(nodeId));
+                                          Option.some(new String(clusterSecret.get(), StandardCharsets.UTF_8))).withDeploymentEngine(engineOf(nodeId));
 
         lastNodeConfig.set(Option.some(config));
         // Single-JVM hosting: when this node would exit (drain complete, or its identity refused by the

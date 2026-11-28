@@ -210,7 +210,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                            .clusterTopologyManager();
     }
 
-    private static final Cause CTM_UNAVAILABLE = new ManagementServerError.ServiceUnavailable("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
+    private static final Cause CTM_UNAVAILABLE = ManagementServerError.ServiceUnavailable.literal("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
 
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();

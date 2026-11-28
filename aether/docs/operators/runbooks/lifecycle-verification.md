@@ -324,8 +324,9 @@ curl -s -X DELETE http://localhost:5150/api/v1/blueprints/org.example:test-bluep
 ```
 Expected: `{"status":"deleted","id":"org.example:test-blueprint:1.0.0"}`
 
-(`DELETE /api/v1/blueprints?id=...` answers `404 File not found: /api/v1/blueprints` — the route
-matcher strips the query string before matching, so the query form matches no DELETE route.)
+(`DELETE /api/v1/blueprints?id=...` answers `405 Method Not Allowed` with `Allow: GET, POST` — the route
+matcher strips the query string before matching, so the query form matches no DELETE route, only the GET and POST
+routes of that path. Before #3796 this was `404 File not found: /api/v1/blueprints`.)
 
 Expected lifecycle: `DEACTIVATE → DEACTIVATING → LOADED → UNLOAD → UNLOADING → (deleted)`
 

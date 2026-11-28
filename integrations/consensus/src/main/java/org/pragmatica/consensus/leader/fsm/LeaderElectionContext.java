@@ -1161,6 +1161,27 @@ public final class LeaderElectionContext {
         return () -> serial.execute(task);
     }
 
+    /// #3809: `task` as the tick of ONE episode of a state: [#serialized(Runnable)], and it runs only while `owner` is
+    /// still the FSM's current state. The episode is the state record's reference (`FsmState`: the reference identifies
+    /// the entry), so a tick whose timer fired before `owner` exited, and is queued behind the exit (and a re-entry that
+    /// allocated a new record), changes no state. GUARANTEE: a tick acts only on the episode that armed it. MECHANISM:
+    /// the check runs INSIDE the serial task, after every task queued ahead of the tick (the exit, the re-entry) ran, so
+    /// the read of the current state and the act on it are one task. ONE enforcer for every timer of a state record
+    /// (grace, poll, election, observation, lease, proposal timeout); `LeaderPreVote` keeps its own episode identity.
+    public Runnable serializedFor(LeaderElectionState owner, Runnable task) {
+        return serialized(() -> runIfCurrent(owner, task));
+    }
+
+    private void runIfCurrent(LeaderElectionState owner, Runnable task) {
+        if (fsm.current() == owner) {
+            task.run();
+        } else {
+            log.debug("Dropping a tick of the exited {} episode: the FSM is in {}",
+                      owner.getClass().getSimpleName(),
+                      fsm.current().getClass().getSimpleName());
+        }
+    }
+
     /// As [#serialized(Runnable)] for a callback that receives a value (a promise completion's result or cause): the
     /// value is captured on the completing thread and `callback` runs with it in the node's one total order.
     public <T> Consumer<T> serialized(Consumer<T> callback) {

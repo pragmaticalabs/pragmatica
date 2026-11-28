@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.pragmatica.portbind.HeldPort;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,7 +40,7 @@ class AlertForwarderTransportRetryTest {
 
     @BeforeEach
     void startReceiver() throws IOException {
-        server = new ServerSocket(0);
+        server = HeldPort.tcp();
     }
 
     @AfterEach

@@ -94,6 +94,7 @@ class Http3StreamWireTest {
 
         server = Http3Server.create(config,
                                     QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                                         .flatMap(LiveTls::liveQuicTls)
                                                          .unwrap(),
                                     (_, writer) -> writer.okText("aggregated"))
                             .await(timeSpan(10).seconds())

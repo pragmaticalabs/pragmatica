@@ -93,6 +93,24 @@ class StreamConfigReplicationTest {
             }
         }
 
+        /// #3796: the node the delete reached holds no ring for the stream, so only the cluster-wide removal can retire it.
+        @Test
+        void destroyUnmaterialized_withNoLocalEntry_writesRemoveCommand_toClusterNode() {
+            var manager = streamPartitionManager(Long.MAX_VALUE, clusterNode);
+            try {
+                assertThat(manager.streamInfo("orders").isEmpty()).as("control: no local entry").isTrue();
+
+                manager.destroyUnmaterialized("orders")
+                       .onFailure(_ -> org.junit.jupiter.api.Assertions.fail("Expected success"));
+
+                var removes = clusterNode.streamConfigRemoves();
+                assertThat(removes).as("destroyUnmaterialized must publish a Remove for StreamConfigKey").hasSize(1);
+                assertThat(removes.getFirst().key().streamName()).isEqualTo("orders");
+            } finally {
+                manager.close();
+            }
+        }
+
         @Test
         void createStream_writesStreamConfigKey_visible_via_ValuePut_hydration() {
             // Mirrors the cluster path: node A (writer) writes, node B (receiver) consumes

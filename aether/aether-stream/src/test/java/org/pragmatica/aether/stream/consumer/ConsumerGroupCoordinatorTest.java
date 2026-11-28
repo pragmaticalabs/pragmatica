@@ -47,7 +47,8 @@ class ConsumerGroupCoordinatorTest {
     void setUp() {
         coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(stubClusterNode(),
                                                                   ConsumerGroupRegistry.consumerGroupRegistry(),
-                                                                  () -> Epoch.epoch(incarnation.get(), 1L, 0L));
+                                                                  () -> Epoch.epoch(incarnation.get(), 1L, 0L),
+                                                                  _ -> Option.some(1L));
     }
 
     private ClusterNode<KVCommand<AetherKey>> stubClusterNode() {

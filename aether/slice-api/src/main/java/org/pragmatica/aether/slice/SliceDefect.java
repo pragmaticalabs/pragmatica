@@ -17,15 +17,16 @@ import org.pragmatica.lang.utils.Causes;
 /// part of this version. An execution timeout is deliberately NOT a defect — a stall is as consistent
 /// with overload or a downstream outage as with a broken version.
 public sealed interface SliceDefect extends Cause {
-    /// The method threw synchronously instead of returning a Promise.
-    record MethodThrew(Cause origin, String message) implements SliceDefect, Cause.Wrapped {
-        public static final Fn1<MethodThrew, Cause> FACTORY = Causes.forOneValue("Slice method threw: %s",
+    /// The method threw synchronously instead of returning a Promise. The origin is usually a caught throwable: `message()`
+    /// formats it for the log, `clientMessage()` formats its client text, so a client body never carries the trace.
+    record MethodThrew(Cause origin, String message, String clientMessage) implements SliceDefect, Cause.Wrapped {
+        public static final Fn1<MethodThrew, Cause> FACTORY = Causes.forOneCause("Slice method threw: %s",
                                                                                  MethodThrew::new);
     }
 
-    /// The request could not be decoded, or the response encoded, by this version's codec.
-    record CodecFailed(Cause origin, String message) implements SliceDefect, Cause.Wrapped {
-        public static final Fn1<CodecFailed, Cause> FACTORY = Causes.forOneValue("Slice codec failed: %s",
+    /// The request could not be decoded, or the response encoded, by this version's codec. Client text as in [MethodThrew].
+    record CodecFailed(Cause origin, String message, String clientMessage) implements SliceDefect, Cause.Wrapped {
+        public static final Fn1<CodecFailed, Cause> FACTORY = Causes.forOneCause("Slice codec failed: %s",
                                                                                  CodecFailed::new);
     }
 

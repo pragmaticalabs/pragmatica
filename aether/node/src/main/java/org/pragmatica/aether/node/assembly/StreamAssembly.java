@@ -58,6 +58,7 @@ import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
 import org.pragmatica.aether.node.projection.ProjectionRegistry;
 import org.pragmatica.aether.node.stream.ClusterCursorStore;
+import org.pragmatica.aether.node.stream.CommittedCursorRead;
 import org.pragmatica.aether.node.stream.ConsensusBatchCounters;
 import org.pragmatica.aether.node.stream.ConsumerAssignmentWriter;
 import org.pragmatica.aether.node.stream.StreamConsumerManager;
@@ -458,12 +459,11 @@ public sealed interface StreamAssembly {
                                                                                                                                         partition))
                                                                                                  .or(-1L),
                                                                 config.streaming(),
-
         // #263: the replication send budget is the stream memory
         // budget's heap cap for un-landed event copies, the sealer's
         // pending cap below (a GUESS at the share; each has its own
         // counter, so the two together may hold twice the cap).
-        in.streamMemoryBudget().sealPendingCapBytes());
+                                                                in.streamMemoryBudget().sealPendingCapBytes());
         var streamSegmentIndex = new SegmentIndex();
         // A3b restore-at-boot: the streams MetadataStore was already restored from its latest disk
         // snapshot when `streamStorageSetup` was assembled (StorageFactory.restoreAndSignalReady), so
@@ -1135,16 +1135,28 @@ public sealed interface StreamAssembly {
         // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
         // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
         // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
-        Runnable streamReplicationShutdown = () -> {
-            streamReplicaSetController.close();
-            streamBackfillExecutor.shutdownNow();
-        };
+        Runnable streamReplicationShutdown = () -> stopStreamReplication(streamReplicaSetController,
+                                                                         streamPartitionBackfill,
+                                                                         streamBackfillExecutor);
 
         return new StreamOwnershipOutputs(streamOwnershipViews,
                                           streamPartitionBackfill,
                                           streamBackfillExecutor,
                                           streamReplicaSetController,
                                           streamReplicationShutdown);
+    }
+
+    /// The node stop's end of the stream replication: the controller (its reconcile is what submits to the backfill), then the
+    /// backfill's own timers (#3754: the refusal hold and the idle watch must not start a re-run after the stop), then the
+    /// backfill executor.
+    static Unit stopStreamReplication(ReplicaSetController streamReplicaSetController,
+                                      PartitionBackfill streamPartitionBackfill,
+                                      ExecutorService streamBackfillExecutor) {
+        streamReplicaSetController.close();
+        streamPartitionBackfill.close();
+        streamBackfillExecutor.shutdownNow();
+
+        return Unit.unit();
     }
 
     /// What `streamBackfillTick` reads from the assembly built so far.
@@ -1374,12 +1386,18 @@ public sealed interface StreamAssembly {
         var consensusBatchCounters = ConsensusBatchCounters.consensusBatchCounters();
         Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> cursorCommandWriter = consensusBatchCounters.counting(commands -> switchableCluster.apply(commands)
                                                                                                                                           .mapToUnit());
+        // #3283: a worker's replica excludes cursor checkpoints, so its resume and its rewind check read them through
+        // consensus (a KVCommand.Get forwarded to a core), never from its own mirror. A core node keeps its local read.
+        BooleanSupplier forwardingCluster = () -> switchableCluster.current() instanceof ForwardingClusterNode;
+        var committedCursorReads = CommittedCursorRead.consensusReads(commands -> switchableCluster.<Object> apply(commands));
+        var committedCursorRead = CommittedCursorRead.consensusRead(commands -> switchableCluster.<Object> apply(commands));
         var streamClusterCursorStore = ProjectionAwareCursorStore.projectionAwareCursorStore(ClusterCursorStore.clusterCursorStore(streamCursorStore,
                                                                                                                                    config.self(),
                                                                                                                                    committedCursorReader,
                                                                                                                                    committedConsumerAssignments,
                                                                                                                                    cursorCommandWriter,
-                                                                                                                                   () -> switchableCluster.current() instanceof ForwardingClusterNode),
+                                                                                                                                   forwardingCluster,
+                                                                                                                                   committedCursorRead),
                                                                                              projectionRegistry);
         // #386 durable pub-sub: dead letters for `topic:*` streams are durable — re-enveloped
         // group-attributed and appended to the topic's `.dlq` stream through the same confirmation
@@ -1440,10 +1458,9 @@ public sealed interface StreamAssembly {
                                                                                                                                         streamName -> streamConsumerOwnership.partitionCount(streamName)
                                                                                                                                                                              .isPresent()),
                                                                                 consumerAssignmentAuthority,
-                                                                                (streamName, partition, group) -> committedCursorReader.apply(AetherKey.StreamCursorCheckpointKey.streamCursorCheckpointKey(streamName,
-                                                                                                                                                                                                            partition,
-                                                                                                                                                                                                            group))
-                                                                                                                                       .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
+                                                                                CommittedCursorRead.committedEpochs(forwardingCluster,
+                                                                                                                    committedCursorReader,
+                                                                                                                    committedCursorReads));
 
         streamConsumerManager.setOperatorWarningSink(operatorWarningSink);
         // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's

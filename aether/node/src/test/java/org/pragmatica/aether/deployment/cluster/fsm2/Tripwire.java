@@ -9,9 +9,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 import java.util.ArrayList;
 import java.util.function.Predicate;
+import org.pragmatica.testlogging.SourceWalk;
 
 
 /// A source scan for the architecture tripwires (NT-116): which main sources construct or mention a name.
@@ -45,30 +45,26 @@ final class Tripwire {
     }
 
     private static List<String> scan(Path root, String type, Predicate<String> match) throws IOException {
-        try (Stream<Path> files = Files.walk(root)) {
-            var sources = files.filter(path -> path.toString()
-                                                   .endsWith(".java"))
-                               .filter(path -> !path.toString()
-                                                    .contains("/src/test/"))
-                               .filter(path -> !path.toString()
-                                                    .contains("/target/"))
-                               .filter(path -> !path.toString()
-                                                    .contains(".m2-local"))
-                               .filter(path -> !path.getFileName()
-                                                    .toString()
-                                                    .equals("MembershipDecision.java"))
-                               .toList();
-            var hits = new ArrayList<String>();
+        var sources = SourceWalk.files(root)
+                                .stream()
+                                .filter(path -> path.toString()
+                                                    .endsWith(".java"))
+                                .filter(path -> !path.toString()
+                                                     .contains("/src/test/"))
+                                .filter(path -> !path.getFileName()
+                                                     .toString()
+                                                     .equals("MembershipDecision.java"))
+                                .toList();
+        var hits = new ArrayList<String>();
 
-            for (var source : sources) {
-                for (var line : Files.readAllLines(source)) {
-                    if (match.test(line)) {
-                        hits.add(source + ": " + line.trim());
-                    }
+        for (var source : sources) {
+            for (var line : Files.readAllLines(source)) {
+                if (match.test(line)) {
+                    hits.add(source + ": " + line.trim());
                 }
             }
-
-            return hits;
         }
+
+        return hits;
     }
 }

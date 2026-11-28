@@ -246,17 +246,7 @@ class EmberUpgradeRunTest {
     }
 
     private NodeReplacementValue recordOf(NodeId original) {
-        NodeReplacementValue newest = null;
-
-        for (var node : live()) {
-            var found = node.nodeReplacementService().status(original).or((NodeReplacementValue) null);
-
-            if (found != null && (newest == null || found.epoch() > newest.epoch())) {
-                newest = found;
-            }
-        }
-
-        return newest;
+        return ReplacementSignal.newestRecordOnAnyNode(live(), original).or((NodeReplacementValue) null);
     }
 
     private static boolean isTerminal(NodeReplacementPhase phase) {

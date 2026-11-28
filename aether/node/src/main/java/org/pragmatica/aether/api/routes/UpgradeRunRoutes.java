@@ -107,8 +107,8 @@ public final class UpgradeRunRoutes implements RouteSource {
     /// A refusal is a statement about the request or the run's state, not a server fault: 404 when there is no run, 409 otherwise.
     static Cause asManagementError(Cause cause) {
         return switch (cause) {
-            case Refusal.NoRun refusal -> new ManagementServerError.NotFound(refusal.message());
-            case Refusal refusal -> new ManagementServerError.Conflict(refusal.message());
+            case Refusal.NoRun refusal -> new ManagementServerError.NotFound(refusal);
+            case Refusal refusal -> new ManagementServerError.Conflict(refusal);
             default -> cause;
         };
     }

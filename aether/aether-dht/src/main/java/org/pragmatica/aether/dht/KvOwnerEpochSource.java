@@ -18,8 +18,9 @@ import org.pragmatica.dht.OwnerEpochSource;
 /// the source of truth; a put is stamped with whatever epoch is currently committed for the node's
 /// arc.
 ///
-/// This is the one cross-module place that turns an [Epoch] into the two primitive `long`s the DHT
-/// wire carries, keeping the BSL-1.1 `Epoch` type out of the Apache-2.0 `integrations/dht` module.
+/// This is the one cross-module place that turns an [Epoch] into the primitive `long`s the DHT
+/// wire carries (one [OwnerEpoch], from ONE read of the record, #3720), keeping the BSL-1.1 `Epoch` type out of the
+/// Apache-2.0 `integrations/dht` module.
 /// When no ownership record is committed yet (cold start), it reports [Epoch#ZERO] — the unfenced
 /// floor, accepted by every fresh high-water.
 public final class KvOwnerEpochSource implements OwnerEpochSource {
@@ -38,21 +39,15 @@ public final class KvOwnerEpochSource implements OwnerEpochSource {
     }
 
     @Override
-    public long currentEpochIncarnation() {
-        return currentEpoch().incarnation();
+    public OwnerEpoch currentEpoch() {
+        return toOwnerEpoch(committedEpoch());
     }
 
-    @Override
-    public long currentEpochTerm() {
-        return currentEpoch().rabiaTerm();
+    private static OwnerEpoch toOwnerEpoch(Epoch epoch) {
+        return OwnerEpoch.ownerEpoch(epoch.incarnation(), epoch.rabiaTerm(), epoch.localCounter());
     }
 
-    @Override
-    public long currentEpochCounter() {
-        return currentEpoch().localCounter();
-    }
-
-    private Epoch currentEpoch() {
+    private Epoch committedEpoch() {
         return kvStore.getTyped(ownershipKey, DhtPartitionOwnershipValue.class)
                       .map(DhtPartitionOwnershipValue::ownerEpoch)
                       .or(Epoch.ZERO);

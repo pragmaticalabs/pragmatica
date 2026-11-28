@@ -28,10 +28,12 @@ import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.consensus.topology.TransportObservation;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 
 @SuppressWarnings("JBCT-RET-01")
@@ -367,6 +369,19 @@ public interface ClusterTopologyManager extends TopologyManager {
         }
     }
 
+    /// #3439: the choke point's two plain refusals, named once: [#drainRefusal] answers with them and [#isDrainRefusal] recognises them.
+    Cause RETIREMENT_AWAITS_VOTER_HANDOFF = Causes.cause("Node retirement awaits certified voter handoff");
+    Cause PAIRED_IN_NODE_REPLACEMENT = Causes.cause("Node is paired in an in-flight node replacement");
+
+    Set<String> PLAIN_DRAIN_REFUSALS = Set.of(RETIREMENT_AWAITS_VOTER_HANDOFF.message(),
+                                              PAIRED_IN_NODE_REPLACEMENT.message());
+
+    /// #3439: whether `cause` is one of the drain choke point's refusals (the table [#drainRefusal] answers from), as opposed to a drain that
+    /// failed for another reason (a consensus put, a join outcome). Refusals are plain causes, so they are recognised by their message.
+    static boolean isDrainRefusal(Cause cause) {
+        return cause instanceof LeaderCannotDrainItself || PLAIN_DRAIN_REFUSALS.contains(cause.message());
+    }
+
     /// #3626: why [#drainNode] queued nothing for `node`: it is the node the topology manager runs on, which carries the DRAIN
     /// commands while it leads. The owner ruling of 2026-11-18 stands: a typed refusal now, a leadership hand-off before the
     /// drain later. The operator route's `LeaderCannotBeDrained` states the same rule for its own channel. A leader that is
@@ -456,6 +471,13 @@ public interface ClusterTopologyManager extends TopologyManager {
 
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
+    /// #3439: the ONE answer to "may `targetNodeId` be drained now, for `reason`". [#drainNode] refuses exactly when this is present, and the
+    /// reconciler's surplus selection asks it before it picks a victim, so a node the choke point would refuse is never selected. Default:
+    /// nothing is refused (a manager that drains nothing).
+    default Option<Cause> drainRefusal(NodeId targetNodeId, DrainReason reason) {
+        return Option.none();
+    }
+
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
 
     /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider listing shows no
@@ -530,11 +552,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// Membership v2 / B5b production factory. Wires the leader's DRAIN command channel:
-    /// `drainCommandSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
+    /// `drainSink` enqueues a drain target into the `DrainCommandRegistry` (so the leader's
     /// cluster-sync ping carries the target in its global `drainNodes` set, and the target self-drains via its
     /// `DrainProcedure`); `drainCommandClear` removes the target when the CTM grace-terminate
-    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires these to
-    /// `DrainCommandRegistry::requestDrain` / `::clearDrain`.
+    /// backstop fires, whether or not it reaps (#1050). `AetherNode` wires the sink as `DrainSink.synchronous` over
+    /// `DrainCommandRegistry::requestDrain` and the FSM's drain event, and the clear to `DrainCommandRegistry::clearDrain`.
     ///
     /// #685 review round 1 NOTE 4 — `autoHealStateReader` is REQUIRED here, not defaulted: a
     /// production wiring site that omitted it would silently get permanently-enabled auto-heal with
@@ -548,7 +570,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
-                                                         Consumer<NodeId> drainCommandSink,
+                                                         DrainSink drainSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
                                                          MembershipLiveness liveness) {
@@ -561,7 +583,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          commandApplier,
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
-                                                                         drainCommandSink,
+                                                                         drainSink,
                                                                          drainCommandClear,
                                                                          autoHealStateReader,
                                                                          liveness);
@@ -593,7 +615,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                          Supplier<Option<ClusterConfigValue>> clusterConfigReader,
                                                          Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> commandApplier,
                                                          Supplier<ClusterPhase> phaseSupplier,
-                                                         Consumer<NodeId> drainCommandSink,
+                                                         DrainSink drainSink,
                                                          Consumer<NodeId> drainCommandClear,
                                                          Supplier<Option<TomlDocument>> resolvedLocalConfig,
                                                          Supplier<Option<AutoHealStateValue>> autoHealStateReader,
@@ -607,7 +629,7 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                                          commandApplier,
                                                                          phaseSupplier,
                                                                          System::currentTimeMillis,
-                                                                         drainCommandSink,
+                                                                         drainSink,
                                                                          drainCommandClear,
                                                                          resolvedLocalConfig,
                                                                          autoHealStateReader,

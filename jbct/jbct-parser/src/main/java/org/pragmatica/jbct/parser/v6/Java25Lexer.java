@@ -1,8 +1,9 @@
-// peglib-generator: 0.7.3 (build:60f0704043b2)
+// peglib-generator: 0.7.5 (build:4ce6b3bc7b1e)
 package org.pragmatica.jbct.parser.v6;
 
 import org.pragmatica.peg.token.TokenArray;
 import org.pragmatica.peg.token.TokenArrayBuilder;
+import org.pragmatica.peg.token.TokenStop;
 
 public final class Java25Lexer {
 
@@ -132,10 +133,15 @@ public final class Java25Lexer {
     }
 
     public static TokenArray lex(String input) {
+        return lex(input, 0, null);
+    }
+
+    public static TokenArray lex(String input, int from, TokenStop stop) {
         TokenArrayBuilder builder = new TokenArrayBuilder(input);
         int len = input.length();
-        int pos = 0;
+        int pos = from;
         while (pos < len) {
+            if (stop != null && stop.stopBefore(pos)) break;
             int state = 0;
             int lastAcceptEnd = -1;
             int lastAcceptKind = -1;
@@ -157,8 +163,9 @@ public final class Java25Lexer {
                     lastAcceptKind = ak;
                 }
             }
+            int reach = cur + 1;
             if (lastAcceptEnd <= pos) {
-                builder.append(TokenArray.KIND_WHITESPACE, pos, pos + 1);
+                builder.append(TokenArray.KIND_WHITESPACE, pos, pos + 1, reach);
                 pos++;
                 continue;
             }
@@ -190,7 +197,7 @@ public final class Java25Lexer {
                     }
                 }
             }
-            builder.append(lastAcceptKind, pos, lastAcceptEnd);
+            builder.append(lastAcceptKind, pos, lastAcceptEnd, reach);
             pos = lastAcceptEnd;
         }
         return builder.build(KIND_NAMES);

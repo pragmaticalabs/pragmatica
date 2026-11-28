@@ -56,6 +56,23 @@ class OperatorWarningCodeTest {
         assertThat(rejected.recoveryOf()).isEqualTo(Option.none());
     }
 
+    /// #3525 round 1 (F-E): the wire name, subsystem and level of the label-quorum pair are what operators alert on; the wait is a
+    /// WARNING, its recovery an INFO that closes it.
+    @Test
+    void labelQuorumPair_pinsCodeSubsystemLevelAndRecovery() {
+        var incomplete = OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE;
+        var complete = OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE;
+
+        assertThat(incomplete.code()).isEqualTo("consensus-quorum-incomplete");
+        assertThat(incomplete.subsystem()).isEqualTo("consensus");
+        assertThat(incomplete.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(incomplete.recoveryOf()).isEqualTo(Option.none());
+        assertThat(complete.code()).isEqualTo("consensus-quorum-complete");
+        assertThat(complete.subsystem()).isEqualTo("consensus");
+        assertThat(complete.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(complete.recoveryOf()).isEqualTo(Option.some(incomplete));
+    }
+
     @Test
     void codes_areUnique() {
         var byCode = Arrays.stream(OperatorWarningCode.values())
@@ -277,6 +294,18 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.OBSERVER_CONSENSUS_LAGGING.level()).isEqualTo(WarningLevel.WARNING);
     }
 
+    /// #2136: a core voter stuck in SYNCING is a WARNING closed by an INFO recovery of the same subsystem; both wire strings are pinned.
+    @Test
+    void coreVoterSyncingStuck_isClosedByAnInfoRecovery() {
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.recoveryOf()
+                                                               .unwrap()).isEqualTo(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.code()).isEqualTo("core-voter-syncing-stuck");
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.code()).isEqualTo("core-voter-syncing-ended");
+        assertThat(OperatorWarningCode.CORE_VOTER_SYNCING_ENDED.subsystem()).isEqualTo(OperatorWarningCode.CORE_VOTER_SYNCING_STUCK.subsystem());
+    }
+
     /// #2316: a refused responder snapshot leaves the node out of service with no automatic exit, so it is critical and closed
     /// by an INFO recovery of the same subsystem when any restore succeeds; both wire strings are pinned.
     @Test
@@ -299,6 +328,19 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.code()).isEqualTo("stream-consumer-cursor-resumed");
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.level()).isEqualTo(WarningLevel.INFO);
         assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED);
+    }
+
+    /// #3283: an unreadable committed cursor holds the partition and keeps retrying, which an operator must see as a WARNING (not
+    /// INFO, which a dashboard filters out); it is closed by an INFO recovery of the same subsystem. The level is pinned here
+    /// because nothing downstream reads it: the raise sites pass the code, and the level is whatever the code carries.
+    @Test
+    void cursorUnreadable_isAWarning_andIsClosedByCursorReadable() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.code()).isEqualTo("stream-consumer-cursor-unreadable");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.code()).isEqualTo("stream-consumer-cursor-readable");
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE.subsystem()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE.subsystem());
     }
 
     /// #2450 A3-0: a corrupt durable anchor is critical and closed by an INFO recovery of the same subsystem.

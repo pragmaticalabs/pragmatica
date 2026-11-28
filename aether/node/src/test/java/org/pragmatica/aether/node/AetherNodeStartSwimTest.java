@@ -7,7 +7,6 @@ package org.pragmatica.aether.node;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
-import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -38,6 +37,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.swim.AesGcmGossipEncryptor;
 import org.pragmatica.swim.GossipEncryptor;
 import org.pragmatica.swim.RotatingGossipEncryptor;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -217,7 +217,7 @@ class AetherNodeStartSwimTest {
         var gateClock = new AtomicLong();
         var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = HeldPort.udp()) {
             var started = startOnFreePort((detector, failNode) -> AetherNode.startSwim(detector,
                                                                                        network(),
                                                                                        RotatingGossipEncryptor.rotatingGossipEncryptor(aesGcm(NODE_KEY,
@@ -258,7 +258,7 @@ class AetherNodeStartSwimTest {
         var published = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
         var detectors = new CopyOnWriteArrayList<CoreSwimHealthDetector>();
 
-        try (var sender = new DatagramSocket()) {
+        try (var sender = HeldPort.udp()) {
             var started = startOnFreePort((detector, failNode) -> startPublishingTo(published, detector, failNode));
             var swimPort = started.swimPort();
 
@@ -402,15 +402,16 @@ class AetherNodeStartSwimTest {
         assertThat(outcome.await(timeSpan(1).seconds())).isEqualTo(FORMATION_FAILED.result());
     }
 
-    /// The SWIM port is chosen by probing a free UDP port and releasing it, so another socket in the same host
-    /// (a sibling test class's sender, another module's reactor under `-T 1C`) can take it before `startSwim` binds
+    /// The SWIM port used to be chosen by probing a free UDP port and releasing it, so another socket in the same host
+    /// (a sibling test class's sender, another module's reactor under `-T 1C`) could take it before `startSwim` binds
     /// (#3365: `BindException: Address already in use` at the start, the fail hook ran, and the test then waited its
-    /// whole budget on the join announcement that could never come). A bind collision is therefore the environment
-    /// moving the port, not the behaviour under test: start again on a fresh port, up to [#BIND_ATTEMPTS] times, and
+    /// whole budget on the join announcement that could never come). It now comes from [ClusterTestPorts] (#1826), which
+    /// locks it, so a cooperating process cannot take it; a process outside the lock directory still can, and a bind
+    /// collision is then the environment moving the port, not the behaviour under test: start again on a fresh port, up to [#BIND_ATTEMPTS] times, and
     /// fail loudly naming the attempts if every one collides. The product's reaction to a taken port stays pinned by
     /// the tests that hold the port themselves. `startSwim` runs its callbacks inline (start() returns a resolved
     /// promise), so by the time `start` returns the attempt's outcome is already in the returned counter.
-    private StartedSwim startOnFreePort(SwimStart start) throws SocketException {
+    private StartedSwim startOnFreePort(SwimStart start) {
         for (var attempt = 1; attempt <= BIND_ATTEMPTS; attempt++) {
             var swimPort = freeUdpPort();
             var detector = detectorWithSwimPort(swimPort);
@@ -502,9 +503,9 @@ class AetherNodeStartSwimTest {
         return bytes;
     }
 
-    private static int freeUdpPort() throws SocketException {
-        try (var socket = new DatagramSocket(0)) {
-            return socket.getLocalPort();
-        }
+    /// The SWIM port of a node whose cluster port [ClusterTestPorts] issued: cluster UDP, cluster TCP and this SWIM UDP port are probed
+    /// free and locked for the JVM's life, so nothing takes it between this call and the detector's bind (#1826).
+    private static int freeUdpPort() {
+        return ClusterTestPorts.freeClusterPort() + CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     }
 }

@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.junit.jupiter.api.Test;
@@ -341,6 +342,69 @@ class DeclaredRetentionEnforcerTest {
         assertThat(codes()).containsExactly(OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
                                             OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED);
         assertThat(warnings.getFirst().subject()).isEqualTo("node node-1 stream orders[0] 0-0");
+    }
+
+    /// T-157, enforcement arm (#3334, ST 2.5): a `max_bytes` that grows online is the bound of the next pass. Four partitions
+    /// share it; partition 0 holds 3 segments under a share of 3 segments of bytes (nothing goes), then 3 more are sealed and
+    /// the bound doubles: the next pass reclaims nothing (the old bound would take 3), and no reclaimed segment returns.
+    @Test
+    void bytesBoundGrowing_isTheBoundOfTheNextPass_andNoReclaimedSegmentReturns() {
+        var now = System.currentTimeMillis();
+        var stored = sealed(STREAM, 1, now).listSegments(STREAM, 0).getFirst().originalSize();
+        var index = new SegmentIndex();
+        var bound = new AtomicReference<>(bytesBound(12L * stored));
+        var enforcer = enforcer(index, _ -> Option.some(bound.get()), Option.none());
+
+        sealRange(index, 0, 0, 2, now);
+        var firstPass = enforcer.enforceNow().await().or(-1);
+        sealRange(index, 0, 3, 5, now);
+        bound.set(bytesBound(24L * stored));
+        var afterGrowth = enforcer.enforceNow().await().or(-1);
+        var afterGrowthAgain = enforcer.enforceNow().await().or(-1);
+
+        assertThat(firstPass).as("control: 3 segments are within a share of 3").isZero();
+        assertThat(afterGrowth).as("the grown bound (share 6) reclaims nothing from 6 segments; the old one would take 3").isZero();
+        assertThat(afterGrowthAgain).isZero();
+        assertThat(remaining(index, STREAM)).as("all 6 held: a reclaimed segment never comes back, a held one never goes").isEqualTo(6);
+        assertThat(index.listSegments(STREAM, 0).getFirst().startOffset()).isZero();
+    }
+
+    /// T-158, enforcement arm (#3334, ST 2.5): a `max_bytes` that is halved online is the bound of the next pass at every
+    /// holder: each of 4 partitions holding 6 segments under a share of 6 is reclaimed to the new share of 3, the earliest
+    /// held offset moves to 3 (where a group below it is moved forward, once: T-34), and the first pass at the old bound
+    /// took nothing.
+    @Test
+    void bytesBoundShrinking_reclaimsEveryHolderToTheNewShare_atItsNextPass() {
+        var now = System.currentTimeMillis();
+        var stored = sealed(STREAM, 1, now).listSegments(STREAM, 0).getFirst().originalSize();
+        var index = fourPartitions(6, 6, now);
+        var bound = new AtomicReference<>(bytesBound(24L * stored));
+        var enforcer = enforcer(index, _ -> Option.some(bound.get()), Option.none());
+
+        var atOldBound = enforcer.enforceNow().await().or(-1);
+        bound.set(bytesBound(12L * stored));
+        var atNewBound = enforcer.enforceNow().await().or(-1);
+
+        assertThat(atOldBound).as("control: 6 segments are within a share of 6").isZero();
+        assertThat(atNewBound).as("3 segments of each of 4 partitions").isEqualTo(12);
+        for (var partition = 0; partition < 4; partition++) {
+            assertThat(index.listSegments(STREAM, partition)).as("partition " + partition + " keeps its new share").hasSize(3);
+            assertThat(index.listSegments(STREAM, partition).getFirst().startOffset()).as("partition " + partition + " earliest held offset").isEqualTo(3);
+        }
+    }
+
+    private static EnforcedRetention bytesBound(long maxBytes) {
+        return EnforcedRetention.enforcedRetention(RetentionPolicy.retentionPolicy(UNBOUNDED, maxBytes, UNBOUNDED).withDeclared(RetentionDimensions.BYTES),
+                                                   4);
+    }
+
+    /// Seals one-event segments `from` to `to` of `partition`, after those already sealed.
+    private void sealRange(SegmentIndex index, int partition, int from, int to, long eventTime) {
+        var sink = storageSegmentSink(storage, index);
+
+        for (var offset = from; offset <= to; offset++) {
+            sink.seal(sealedSegment(STREAM, partition, offset, offset, 1, eventTime, eventTime, encoded(offset, eventTime))).await();
+        }
     }
 
     private List<OperatorWarningCode> codes() {

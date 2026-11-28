@@ -17,6 +17,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.nio.channels.ClosedChannelException;
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,6 +43,7 @@ import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.net.quic.QuicTransportMetrics.DropSite;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.StreamType;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.testlogging.LogCapture;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -294,7 +296,7 @@ class QuicLaneBacklogTest {
         // so the resend is still pending here. Wait for the resend itself, then pin "exactly once" after the drain settled.
         verify(kept, timeout(AWAIT.nanos() / 1_000_000L).times(1)).writeAndFlush(any());
         awaitWithin("the backlog entry is removed", AWAIT, () -> network.laneBacklogCountForTests() == 0);
-        LockSupport.parkNanos(SETTLE_NANOS);
+        Pause.pause(Duration.ofNanos(SETTLE_NANOS));
 
         verify(kept, times(1)).writeAndFlush(any());
         assertThat(network.quicMetrics().retiredStreamResendCount()).as("re-sent exactly once").isEqualTo(1L);
@@ -470,7 +472,7 @@ class QuicLaneBacklogTest {
 
         var before = writableChecks(lane);
 
-        LockSupport.parkNanos(TimeSpan.timeSpan(500).millis().nanos());
+        Pause.pause(Duration.ofMillis(500));
 
         var passes = writableChecks(lane) - before;
 

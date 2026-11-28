@@ -187,6 +187,29 @@ class NodeReplacementServiceTest {
         refused.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.RoleNotSupported.class));
     }
 
+    /// #3740: the completion signal and the refusal read ONE state, the serving leader's own replacement index. A follower that has
+    /// applied `DONE` does not free the slot; the leader's own `status` showing `DONE` does, and `begin` is accepted the instant it holds.
+    @Test
+    void begin_isRefusedWhileOnlyAFollowersIndexShowsDone_andAcceptedOnceTheLeadersOwnStatusDoes() {
+        var follower = NodeReplacementIndex.nodeReplacementIndex();
+        var key = new AetherKey.NodeReplacementKey(OLD_CORE);
+
+        index.put(key, new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.RETIRING_OLD, 0L));
+        follower.put(key, new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.DONE, 0L));
+        var refused = wiring.service().begin(OLD_WORKER, "").await();
+
+        assertThat(follower.recordFor(OLD_CORE).unwrap().phase()).as("the follower already shows DONE").isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(wiring.service().status(OLD_CORE).unwrap().phase()).as("the leader's status is the signal that matches the refusal").isEqualTo(NodeReplacementPhase.RETIRING_OLD);
+        assertThat(refused.isFailure()).as("begin is refused while the leader's record is live").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isEqualTo(new Refusal.AlreadyReplacing(OLD_CORE)));
+        assertThat(commands).as("nothing is committed for a refused begin").isEmpty();
+
+        index.put(key, new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.DONE, 0L));
+
+        assertThat(wiring.service().status(OLD_CORE).unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(wiring.service().begin(OLD_WORKER, "").await().isSuccess()).as("begin right after the leader's DONE is accepted").isTrue();
+    }
+
     // ---- begin: the id shape follows the SOURCE of the node being replaced ---------------------------------------------
 
     private void cloudBackedSources(String... names) {

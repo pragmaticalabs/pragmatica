@@ -100,7 +100,7 @@ class ClusterTopologyManagerReplacementStateTest {
                                                             configRef::get,
                                                             ClusterTopologyManagerReplacementStateTest::applyNoop,
                                                             () -> AetherValue.ClusterPhase.NORMAL,
-                                                            _ -> {},
+                                                            DrainSink.synchronous(_ -> {}, _ -> {}),
                                                             _ -> {},
                                                             Option::none,
                                                             MembershipLiveness.UNWIRED);

@@ -1,0 +1,328 @@
+package org.pragmatica.portbind;
+
+import java.io.IOException;
+import java.io.PrintStream;
+import java.io.UncheckedIOException;
+import java.lang.classfile.ClassFile;
+import java.lang.classfile.CodeElement;
+import java.lang.classfile.MethodModel;
+import java.lang.classfile.constantpool.LoadableConstantEntry;
+import java.lang.classfile.constantpool.MemberRefEntry;
+import java.lang.classfile.constantpool.MethodHandleEntry;
+import java.lang.classfile.instruction.ConstantInstruction;
+import java.lang.classfile.instruction.InvokeDynamicInstruction;
+import java.lang.classfile.instruction.InvokeInstruction;
+import java.lang.classfile.instruction.LineNumber;
+import java.net.URL;
+import java.net.URLClassLoader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
+
+/// The bytecode scan behind the port-bind gate (#3801): finds every call site of a socket-bind or port-allocation API ([BindApis])
+/// in a module's compiled test classes, whatever the port argument is, and fails the build on each one that is neither in
+/// `HeldPort` (a `src/main` class of this module, not a scanned tree) nor on the [AllowList] with its reason.
+///
+/// It reads class files, not source: a qualified call, a static import, a call through a subtype, a method reference
+/// (`ServerSocket::new`) and a call inside a lambda or an initialiser all compile to a reference the scan sees, and the spelling
+/// of the port (`0`, `(int) 0`, a variable, a computed value) never reaches it. Each site is reported as `class:line`.
+///
+/// Run per module by the root pom's `port-bind-gate` profile over `target/test-classes`; the module's test classpath is the
+/// class loader that resolves a call's receiver type to its supertypes. `mode` is `enforce` (a site fails the run) or `report`
+/// (every site is listed with its verdict and the run passes: how the sites were first enumerated).
+///
+/// Off-switch: the execution is skipped by `-Dmaven.test.skip=true` alone, because that compiles no test class and there is nothing to
+/// read. `-Dmaven.antrun.skip` is deliberately NOT honoured: one global flag would switch off the gate of every module (and the
+/// repository's other antrun executions with it), and the execution's explicit `skip` overrides that property anyway. The mode is
+/// `enforce` in the root pom and only there; a pin in script-gate fails when another pom, `.mvn/maven.config` or a workflow sets it.
+///
+/// What it cannot see: reflection and `MethodHandles.Lookup` finds by name (a class name held in a string is data to a bytecode
+/// scan, and no test of this repository binds that way), a bind in `src/main` (not a test class; that is production code and its
+/// own concern), and a port that reaches a bind inside the repository's own server-start entry points.
+///
+/// JBCT rules suppressed on this class: this module may depend on nothing in this repository (every module with `src/test` gets it
+/// at test scope, so a dependency on `core` is a reactor cycle), which leaves `Result` and `Option` unavailable, and the class
+/// is a command-line tool whose boundary is the JDK's (`throws`, `Optional`, a `void main`).
+@SuppressWarnings({"JBCT-EX-01", "JBCT-RET-01", "JBCT-BND-01"})
+public final class PortBindScan {
+    static final String ENFORCE = "enforce";
+    static final String REPORT = "report";
+    /// The stamp file's name, written to the module's `target/`.
+    public static final String STAMP = "port-bind-gate.txt";
+    private static final String ALLOW_LIST_RESOURCE = "allowlist.txt";
+    private static final Pattern LAMBDA = Pattern.compile("lambda\\$(.+)\\$\\d+");
+
+    private static final String FIX = "bind the port through org.pragmatica.portbind.HeldPort (it comes back open and holds the port for as long as it is open), or"
+                                    + " take a reserved port from the module's ClusterTestPorts, or bind port 0 inside the server under test and read the bound port back."
+                                    + " A class whose job is the socket itself is listed with its reason in port-bind-gate's allowlist.txt";
+
+    /// One call site: the class (binary name), the enclosing method (lambdas folded into the method that holds them), the source
+    /// line and the API reference it reaches.
+    public record Site(String className, String method, int line, String api) {
+        public String location() {
+            return className + ":" + line;
+        }
+    }
+
+    /// What one scan of one module found.
+    public record Findings(int classFiles, List<Site> sites, List<Site> violations, List<AllowList.Entry> stale) {
+        public boolean clean() {
+            return violations.isEmpty() && stale.isEmpty();
+        }
+    }
+
+    private PortBindScan() {}
+
+    /// The build's entry point: [#run] with the process's streams; a non-zero status ends the process, which is what fails the
+    /// antrun `java` task (`failonerror`) and so the module's build.
+    public static void main(String[] args) throws IOException {
+        var status = run(args, System.out, System.err);
+
+        if (status != 0) {
+            System.exit(status);
+        }
+    }
+
+    /// `module classesDirectory [enforce|report]` (default `enforce`). The exit status: 0 passes; 1 fails the build, which `enforce`
+    /// does on a violation or a stale entry and every mode does on a wrong argument list, an unknown mode or a missing directory
+    /// (a gate with nothing to read is not a pass). `report` lists every site with its verdict and passes. The build's failure path
+    /// is this status, so a test drives it here and through the real antrun target, never by reading the source.
+    public static int run(String[] args, PrintStream out, PrintStream err) throws IOException {
+        if (args.length < 2 || args.length > 3) {
+            return refuse(err, "usage: PortBindScan <module> <test-classes directory> [enforce|report]");
+        }
+
+        var module = args[0];
+        var directory = Path.of(args[1]);
+        var mode = args.length == 3
+                   ? args[2]
+                   : ENFORCE;
+
+        if (!mode.equals(ENFORCE) && !mode.equals(REPORT)) {
+            return refuse(err, "mode must be enforce or report, was " + mode);
+        }
+
+        if (!Files.isDirectory(directory)) {
+            return refuse(err,
+                          module
+                         + ": " + directory
+                         + " does not exist: the gate has nothing to read, which is not a pass (#3801)");
+        }
+
+        var result = scan(module, directory, PortBindScan.class.getClassLoader(), bundledAllowList());
+
+        out.println(summary(module, result));
+        writeStamp(directory, module, mode, result);
+        if (mode.equals(REPORT)) {
+            reportLines(module, result).forEach(out::println);
+
+            return 0;
+        }
+
+        failures(module, result).forEach(err::println);
+
+        return result.clean()
+               ? 0
+               : 1;
+    }
+
+    private static int refuse(PrintStream err, String message) {
+        err.println("[port-bind-gate] " + message);
+
+        return 1;
+    }
+
+    /// The types of [BindApis]: what the scan refuses, for a pin that holds every one of them to a fixture.
+    public static List<String> apiTypes() {
+        return BindApis.ALL.stream()
+                           .map(BindApis.Api::type)
+                           .toList();
+    }
+
+    /// The scan's own evidence, next to the classes it read: the summary line (with the mode the build ran it in), then every bind call site with its verdict. A test
+    /// in the same module reads it, which is how "the gate ran here, over these classes" is pinned from inside the fork.
+    private static void writeStamp(Path classes, String module, String mode, Findings result) throws IOException {
+        var lines = new ArrayList<String>();
+
+        lines.add(summary(module, result) + ", mode=" + mode);
+        lines.addAll(reportLines(module, result));
+        Files.write(classes.toAbsolutePath().getParent().resolve(STAMP),
+                    lines);
+    }
+
+    public static AllowList bundledAllowList() {
+        try (var in = PortBindScan.class.getResourceAsStream(ALLOW_LIST_RESOURCE)) {
+            if (in == null) {
+                throw new IllegalStateException(ALLOW_LIST_RESOURCE + " is missing from the port-bind-gate jar");
+            }
+
+            return AllowList.parse(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /// Scans every class file under `classes`. `loader` resolves a call's receiver type; the directory itself is added in front
+    /// of it, so a test class that extends a bind type is resolved from the very classes being scanned.
+    public static Findings scan(String module, Path classes, ClassLoader loader, AllowList allowList) throws IOException {
+        try (var own = new URLClassLoader(new URL[]{classes.toUri().toURL()},
+                                          loader)) {
+            var apis = new BindApis(own);
+            var sites = new ArrayList<Site>();
+            var count = 0;
+
+            for (var file : classFiles(classes)) {
+                sites.addAll(scanClass(Files.readAllBytes(file), apis));
+                count++;
+            }
+
+            sites.sort(Comparator.comparing(Site::className).thenComparingInt(Site::line));
+            var violations = sites.stream()
+                                  .filter(site -> !allowList.excuses(module,
+                                                                     site.className(),
+                                                                     site.method()))
+                                  .toList();
+
+            return new Findings(count, List.copyOf(sites), violations, allowList.staleFor(module, sites));
+        }
+    }
+
+    private static List<Path> classFiles(Path root) throws IOException {
+        try (Stream<Path> files = Files.walk(root)) {
+            return files.filter(path -> path.toString()
+                                            .endsWith(".class"))
+                        .sorted()
+                        .toList();
+        }
+    }
+
+    private static List<Site> scanClass(byte[] bytes, BindApis apis) {
+        var model = ClassFile.of().parse(bytes);
+        var className = model.thisClass().asInternalName().replace('/', '.');
+        var sites = new ArrayList<Site>();
+
+        for (var method : model.methods()) {
+            scanMethod(className, method, apis, sites);
+        }
+
+        return sites;
+    }
+
+    private static void scanMethod(String className, MethodModel method, BindApis apis, List<Site> sites) {
+        var enclosing = enclosingName(method.methodName().stringValue());
+
+        method.code()
+              .ifPresent(code -> {
+                             var line = 0;
+
+                             for (CodeElement element : code) {
+                                 if (element instanceof LineNumber number) {
+                                     line = number.line();
+                                 } else {
+                                     for (var api : bindsAt(element, apis)) {
+                                         sites.add(new Site(className, enclosing, line, api));
+                                     }
+                                 }
+                             }
+                         });
+    }
+
+    /// The APIs one instruction reaches: a direct call, a method handle loaded as a constant, or a handle in an invokedynamic's
+    /// bootstrap arguments (`ServerSocket::new` compiles to the last).
+    private static List<String> bindsAt(CodeElement element, BindApis apis) {
+        return switch (element) {
+            case InvokeInstruction call -> reference(call.owner().asInternalName(),
+                                                     call.name().stringValue(),
+                                                     call.type().stringValue(),
+                                                     apis);
+            case ConstantInstruction.LoadConstantInstruction load -> handle(load.constantEntry(), apis);
+            case InvokeDynamicInstruction dynamic -> dynamic.invokedynamic().bootstrap().arguments().stream().flatMap(entry -> handle(entry,
+                                                                                                                                      apis).stream()).toList();
+            default -> List.of();
+        };
+    }
+
+    private static List<String> handle(LoadableConstantEntry entry, BindApis apis) {
+        return entry instanceof MethodHandleEntry handle
+               ? member(handle.reference(), apis)
+               : List.of();
+    }
+
+    private static List<String> member(MemberRefEntry ref, BindApis apis) {
+        return reference(ref.owner().asInternalName(),
+                         ref.name().stringValue(),
+                         ref.type().stringValue(),
+                         apis);
+    }
+
+    private static List<String> reference(String owner, String name, String descriptor, BindApis apis) {
+        return owner.startsWith("[")
+               ? List.of()
+               : apis.match(owner, name, descriptor)
+                     .stream()
+                     .toList();
+    }
+
+    private static String enclosingName(String methodName) {
+        var matcher = LAMBDA.matcher(methodName);
+
+        if (!matcher.matches()) {
+            return methodName;
+        }
+
+        return switch (matcher.group(1)) {
+            case "static" -> "<clinit>";
+            case "new" -> "<init>";
+            default -> matcher.group(1);
+        };
+    }
+
+    public static String summary(String module, Findings result) {
+        return "[port-bind-gate] " + module
+             + ": scanned " + result.classFiles()
+             + " test class file(s), " + result.sites()
+                                               .size()
+             + " bind call site(s), " + result.violations()
+                                              .size()
+             + " not allowed, " + result.stale()
+                                        .size()
+             + " stale allow-list entr(ies)";
+    }
+
+    private static List<String> reportLines(String module, Findings result) {
+        return result.sites()
+                     .stream()
+                     .map(site -> "PORT-BIND-SITE " + module
+                                 + " " + site.location()
+                                 + " " + site.method()
+                                 + " " + site.api() + (result.violations()
+                                                             .contains(site)
+                                                       ? " VIOLATION"
+                                                       : " allowed"))
+                     .toList();
+    }
+
+    public static List<String> failures(String module, Findings result) {
+        var lines = new ArrayList<String>();
+
+        result.violations()
+              .forEach(site -> lines.add("[port-bind-gate] " + site.location()
+                                        + " (" + site.method()
+                                        + ") calls " + site.api()
+                                        + "\n    fix: " + FIX));
+        result.stale()
+              .forEach(entry -> lines.add("[port-bind-gate] stale allow-list entry in " + module
+                                         + ": " + entry.target()
+                                         + " (" + entry.reason()
+                                         + ")"
+                                         + "\n    fix: it excuses no bind call site any more; delete it from port-bind-gate's allowlist.txt"));
+
+        return lines;
+    }
+}

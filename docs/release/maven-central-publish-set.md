@@ -205,6 +205,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `jbct/jbct-parser` | `org.pragmatica-lite:jbct-parser` | jar | publish | compile/runtime dependency of jbct-lint |
 | `jbct/slice-processor` | `org.pragmatica-lite:slice-processor` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry |
 | `jbct/slice-processor-tests` | `org.pragmatica-lite:slice-processor-tests` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
+| `port-bind-gate` | `org.pragmatica-lite:port-bind-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `script-gate` | `org.pragmatica-lite:script-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `terra` | `org.pragmatica-lite:terra` | pom | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `terra/conduit-acceptance` | `org.pragmatica-lite:conduit-terra` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
@@ -239,4 +240,4 @@ The limits are cumulative per month, so a second release in the same month needs
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-42 modules publish, 138 skip (180 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+42 modules publish, 139 skip (181 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

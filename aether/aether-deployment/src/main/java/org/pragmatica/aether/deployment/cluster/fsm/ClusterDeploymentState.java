@@ -62,6 +62,7 @@ import org.pragmatica.aether.deployment.cluster.fsm.write.FsmWriteError;
 import org.pragmatica.aether.deployment.cluster.fsm.write.NotLeaderAction;
 import org.pragmatica.aether.deployment.cluster.fsm.write.TermWriter;
 import org.pragmatica.aether.deployment.cluster.fsm.write.WriteSite;
+import org.pragmatica.aether.deployment.schema.SchemaError;
 import org.pragmatica.aether.deployment.schema.SchemaEvent.ActivationBlocked;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentFailed;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
@@ -123,10 +124,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.concurrent.CancellableTask;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
-import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -193,8 +193,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                   Set<NodeId> drainEvictionsInProgress,
                   AtomicInteger allocationIndex,
                   AtomicBoolean deactivated,
-                  TermWriter termWriter,
-                  CancellableTask reconcileTimer) implements ClusterDeploymentState {
+                  TermWriter termWriter) implements ClusterDeploymentState {
         private static final Logger log = LoggerFactory.getLogger(Active.class);
         private static final int MAX_RETRIES = 5;
         /// Retry budget for the fenced deployment-outcome merge (#805 item 2). Each attempt re-reads
@@ -241,9 +240,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return new StaleEntryCleaner(this);
         }
 
+        /// #1191: both timers are armed through the entry's lifetime, so an `onEntry` that `onExit` has overtaken registers nothing
+        /// that survives, and leaving the state cancels them with no handle kept here. `deactivated` stays for the in-flight body guards.
         @Contract
         @Override
-        public void onEntry() {
+        public void onEntry(OwnerLifetime life) {
             log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                      ctx.self(),
                      activeNodes().size());
@@ -255,8 +256,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             rebuildStateFromKVStore();
             removeDeadMembers();
             reconcile();
-            startReconcileTimer();
-            SharedScheduler.schedule(this::deferredTopologyRecheck, timeSpan(2).seconds());
+            life.scheduleAtFixedRate(_ -> reconcileIfActive(), ctx.reconcileInterval());
+            life.schedule(_ -> deferredTopologyRecheck(), timeSpan(2).seconds());
             log.info("Cluster deployment manager activation complete on node {}", ctx.self());
         }
 
@@ -264,7 +265,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         @Override
         public void onExit() {
             deactivated.set(true);
-            cancelReconcileTimer();
             log.trace("Active state deactivated, stale callbacks will be suppressed");
         }
 
@@ -389,7 +389,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var released = new AtomicBoolean(false);
 
             pending.onResultRun(() -> releaseJoin(decision, pending, released, false));
-            SharedScheduler.schedule(() -> releaseJoin(decision, pending, released, true), ctx.removalWaitBound());
+            scheduleInTerm(() -> releaseJoin(decision, pending, released, true), ctx.removalWaitBound());
         }
 
         private void releaseJoin(WorkerJoinDecision decision,
@@ -492,7 +492,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             reconcile();
             if (allocatableNodes().isEmpty()) {
                 log.info("No allocatable nodes after NodeJoined (snapshot not yet ready); scheduling retry in 2s");
-                SharedScheduler.schedule(this::reconcileIfActive, timeSpan(2).seconds());
+                scheduleInTerm(this::reconcileIfActive, timeSpan(2).seconds());
             }
         }
 
@@ -591,19 +591,22 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             sweepDeadRestoredWorkers();
         }
 
-        @Contract
-        public void startReconcileTimer() {
-            reconcileTimer.set(SharedScheduler.scheduleAtFixedRate(this::reconcileIfActive, ctx.reconcileInterval()));
-        }
-
         private void reconcileIfActive() {
             if (!deactivated.get()) {
                 reconcile();
             }
         }
 
-        private void cancelReconcileTimer() {
-            reconcileTimer.cancel();
+        /// #1191: the arm for every schedule that is not made in `onEntry` (event handlers, write-failure callbacks, the drain
+        /// chain's re-arms). Reads the current entry ONCE and arms only when that entry is this Active, through that entry's lifetime:
+        /// an Active the FSM has left, or a stale callback arriving after a re-activation, registers nothing anywhere. A lifetime read
+        /// apart from the state could land a stale arm on the next term's lifetime.
+        private void scheduleInTerm(Runnable task, TimeSpan delay) {
+            var entered = ctx.fsm().entered();
+
+            if (entered.state() == this) {
+                entered.lifetime().schedule(_ -> task.run(), delay);
+            }
         }
 
         @Contract
@@ -1053,9 +1056,20 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             log.info("Schema migration pending for datasource: {}", datasource);
             ctx.schemaOrchestrator()
                .migrateIfNeeded(datasource)
-               .onFailure(cause -> log.error("Schema migration failed for {}: {}",
-                                             datasource,
-                                             cause.message()));
+               .onFailure(cause -> logMigrationFailure(datasource, cause));
+        }
+
+        /// #3754: an orchestrator stopped with its node refuses the dispatch before attempting anything, which is the shutdown working,
+        /// not a failed migration: it is logged at INFO, every other failure stays at ERROR.
+        @Contract
+        private void logMigrationFailure(String datasource, Cause cause) {
+            if (cause instanceof SchemaError.OrchestratorStopped) {
+                log.info("Schema migration for {} not started: {}", datasource, cause.message());
+
+                return;
+            }
+
+            log.error("Schema migration failed for {}: {}", datasource, cause.message());
         }
 
         private void handleSchemaCompleted(String datasource) {
@@ -1119,7 +1133,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
-            SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
+            scheduleInTerm(this::reconcile, timeSpan(1).seconds());
         }
 
         /// #1492 — `wasPresent` is whether the KV-Store actually held the key. `KVStore.handleRemove` publishes
@@ -1169,7 +1183,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                        removedBlueprintId,
                                        artifactsToRemove.stream().map(Artifact::base).toList(),
                                        0);
-            SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
+            scheduleInTerm(this::reconcile, timeSpan(5).seconds());
         }
 
         /// Community-aware WORKER role assignment (worker-membership-spec §4.1 / §3.3): resolve the
@@ -1733,7 +1747,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             var missing = Math.max(0, desiredReplicaCount(artifact) - (int) placed);
 
             issueAllocationsForNodes(artifact, missing, targetNodes);
-            SharedScheduler.schedule(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
+            scheduleInTerm(() -> checkReplacementAndUnload(originalKey), timeSpan(3).seconds());
         }
 
         private void checkReplacementAndUnload(SliceNodeKey originalKey) {
@@ -1750,10 +1764,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             if (hasActiveReplacement) {
                 log.info("Drain eviction: replacement ACTIVE for {}, unloading from {}", artifact, drainingNode);
                 issueUnloadCommand(WriteSite.UNLOAD_DRAIN, originalKey);
-                SharedScheduler.schedule(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
+                scheduleInTerm(() -> evictNextSliceFromNode(drainingNode), timeSpan(2).seconds());
             } else {
                 log.debug("Drain eviction: replacement not yet ACTIVE for {}, rechecking", artifact);
-                SharedScheduler.schedule(() -> deployReplacementForDrain(originalKey), timeSpan(3).seconds());
+                scheduleInTerm(() -> deployReplacementForDrain(originalKey), timeSpan(3).seconds());
             }
         }
 
@@ -2768,7 +2782,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      failureReason,
                      jitteredMs,
                      delaySeconds);
-            SharedScheduler.schedule(this::reconcile, timeSpan(jitteredMs).millis());
+            scheduleInTerm(this::reconcile, timeSpan(jitteredMs).millis());
         }
 
         /// #922 — retry exhaustion is TERMINAL for a deployment attempt that never applied, and is
@@ -3219,9 +3233,9 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         private void onActivateWriteFailure(SliceNodeKey sliceKey, Cause cause, int attempt) {
             log.error("Failed to issue ACTIVATE command for {} (attempt {}): {}", sliceKey, attempt + 1, cause.message());
             activateRetryDelay(attempt,
-                               () -> ThreadLocalRandom.current().nextDouble()).onPresent(delay -> SharedScheduler.schedule(() -> retryActivateIfStillLoaded(sliceKey,
-                                                                                                                                                            attempt + 1),
-                                                                                                                           delay))
+                               () -> ThreadLocalRandom.current().nextDouble()).onPresent(delay -> scheduleInTerm(() -> retryActivateIfStillLoaded(sliceKey,
+                                                                                                                                                  attempt + 1),
+                                                                                                                 delay))
                               .onEmpty(() -> log.warn("ACTIVATE for {} not retried after {} attempts; the reconcile backstop re-issues it after {} ms in LOADED",
                                                       sliceKey,
                                                       attempt + 1,
@@ -3388,13 +3402,13 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             }
 
             log.error("Batch consensus write failed ({} commands): {}", commands.size(), cause.message());
-            SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
+            scheduleInTerm(this::reconcile, timeSpan(5).seconds());
         }
 
         private void handleSliceNodeWriteFailure(SliceNodeKey sliceKey, Cause cause) {
             log.error("DHT write failed for {}: {}", sliceKey, cause.message());
             sliceStates.remove(sliceKey);
-            SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
+            scheduleInTerm(this::reconcile, timeSpan(5).seconds());
         }
 
         private Promise<Unit> handleNodeRemoval(NodeId removedNode) {
@@ -4402,8 +4416,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                            () -> restoreCommands(inflight, previous, abandoned, cause),
                            () -> {
                                abandoned.forEach(this::issueDeallocationCommands);
-                               SharedScheduler.schedule(() -> restoringBlueprints.remove(previous.id()),
-                                                        timeSpan(5).seconds());
+                               scheduleInTerm(() -> restoringBlueprints.remove(previous.id()),
+                                              timeSpan(5).seconds());
                            },
                            () -> restoringBlueprints.remove(previous.id()),
                            0);
@@ -4492,11 +4506,63 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         /// #731 round 2: lets a test invoke the 2s-deferred retry (`Active.onEntry`'s
-        /// `SharedScheduler.schedule(this::deferredTopologyRecheck, ...)` call site) synchronously,
+        /// `life.schedule(_ -> deferredTopologyRecheck(), ...)` call site) synchronously,
         /// to pin the cold-leader-then-converged sequencing without waiting out the real delay.
         @Contract
         void deferredTopologyRecheckForTest() {
             deferredTopologyRecheck();
+        }
+
+        /// #1191: lets a test reach the event- and callback-path schedules without a full event round trip; each seam is the one
+        /// call the named handler makes, so the arm under test is the production arm.
+        @Contract
+        void handleNodeAddedForTest(NodeId addedNode) {
+            handleNodeAdded(addedNode);
+        }
+
+        @Contract
+        void handleSliceNodeRemovalForTest(SliceNodeKey sliceNodeKey) {
+            handleSliceNodeRemoval(sliceNodeKey);
+        }
+
+        @Contract
+        void awaitRemovalThenRejoinForTest(WorkerJoinDecision decision, Promise<Unit> pending) {
+            awaitRemovalThenRejoin(decision, pending);
+        }
+
+        @Contract
+        void handleAppBlueprintRemovalForTest(AppBlueprintKey key, boolean wasPresent) {
+            handleAppBlueprintRemoval(key, wasPresent);
+        }
+
+        @Contract
+        void deployReplacementForDrainForTest(SliceNodeKey originalKey) {
+            deployReplacementForDrain(originalKey);
+        }
+
+        @Contract
+        void checkReplacementAndUnloadForTest(SliceNodeKey originalKey) {
+            checkReplacementAndUnload(originalKey);
+        }
+
+        @Contract
+        void handleTransientFailureForTest(SliceNodeKey sliceKey, String failureReason) {
+            handleTransientFailure(sliceKey, failureReason);
+        }
+
+        @Contract
+        void onActivateWriteFailureForTest(SliceNodeKey sliceKey, Cause cause, int attempt) {
+            onActivateWriteFailure(sliceKey, cause, attempt);
+        }
+
+        @Contract
+        void handleBatchFailureForTest(Cause cause, List<KVCommand<AetherKey>> commands) {
+            handleBatchFailure(cause, commands);
+        }
+
+        @Contract
+        void handleSliceNodeWriteFailureForTest(SliceNodeKey sliceKey, Cause cause) {
+            handleSliceNodeWriteFailure(sliceKey, cause);
         }
 
         /// `attemptId` (#972) is the attempt of the `AppBlueprintValue` this entry tracks — the attempt

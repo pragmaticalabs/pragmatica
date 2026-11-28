@@ -59,7 +59,7 @@ class ForgeServerForgeConfigRefusalTest {
         Files.writeString(dir.resolve("forge.toml"), OLD_KEY);
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         var out = dir.resolve("out.txt");
-        var process = new ProcessBuilder(List.of(java, "-Xmx256m", "-cp", System.getProperty("java.class.path"), ForgeServer.class.getName(),
+        var process = new ProcessBuilder(List.of(java, "-Xmx256m", "-XX:-UseBASE64Intrinsics", "-cp", System.getProperty("java.class.path"), ForgeServer.class.getName(),
                                                  "--config", dir.resolve("forge.toml").toString()))
             .redirectErrorStream(true)
             .redirectOutput(out.toFile())

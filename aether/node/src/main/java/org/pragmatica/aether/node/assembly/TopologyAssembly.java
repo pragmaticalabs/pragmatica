@@ -30,6 +30,7 @@ import org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
+import org.pragmatica.aether.deployment.cluster.DrainSink;
 import org.pragmatica.aether.deployment.cluster.MembershipLiveness;
 import org.pragmatica.aether.deployment.cluster.NodeLifecycleManager;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
@@ -58,6 +59,7 @@ import org.pragmatica.aether.node.CoreAdmission;
 import org.pragmatica.aether.node.FailedVoterEvidence;
 import org.pragmatica.aether.node.LeaderTerm;
 import org.pragmatica.aether.node.NodeReplacementWiring;
+import org.pragmatica.aether.node.StuckSyncingVoters;
 import org.pragmatica.aether.node.UpgradeRunWiring;
 import org.pragmatica.aether.node.assembly.DrainAssembly;
 import org.pragmatica.aether.node.health.CoreSwimHealthDetector;
@@ -109,7 +111,6 @@ import static org.pragmatica.aether.node.AetherNode.installedVoterIds;
 import static org.pragmatica.aether.node.AetherNode.readyCoreCandidates;
 import static org.pragmatica.aether.node.AetherNode.retirementEligibleCore;
 import static org.pragmatica.aether.node.AetherNode.swimAliveForCoConfirmation;
-import static org.pragmatica.aether.node.assembly.DrainAssembly.requestDrainThroughFsm;
 
 
 /// The topology unit of the node assembly: the node source lifecycle, the community-retirement, node-replacement and
@@ -148,7 +149,9 @@ public sealed interface TopologyAssembly {
                                                                                                                                 clusterNode.leaderManager()::isLeader,
                                                                                                                                 () -> config.autoHeal()
                                                                                                                                             .maxNodes()
-                                                                                                                                            .or(Integer.MAX_VALUE));
+                                                                                                                                            .or(Integer.MAX_VALUE))
+                                                                                                   .withApplyTimeout(config.protocol()
+                                                                                                                           .applyTimeout());
 
         return lifecycleManager;
     }
@@ -208,7 +211,8 @@ public sealed interface TopologyAssembly {
                                   AtomicReference<LeaderReconciler> leaderReconcilerRef,
                                   IntSupplier configuredCoreCountSupplier,
                                   ClusterTopologyManager clusterTopologyManager,
-                                  CoreAdmission coreAdmission) {}
+                                  CoreAdmission coreAdmission,
+                                  StuckSyncingVoters stuckSyncingVoters) {}
 
     /// The cluster phase view, the topology manager with its setters, core admission, the core voter reconciler and the phase watcher, all deferred until start.
     static TopologyManagerOutputs topologyManager(TopologyManagerInputs in) {
@@ -269,9 +273,8 @@ public sealed interface TopologyAssembly {
                                                                                    clusterConfigReader,
                                                                                    clusterCommandApplier,
                                                                                    effectivePhaseSupplier,
-                                                                                   target -> requestDrainThroughFsm(drainCommandRegistry,
-                                                                                                                    membershipFsmRef,
-                                                                                                                    target),
+                                                                                   DrainSink.synchronous(drainCommandRegistry::requestDrain,
+                                                                                                         fsmDrainRequested(membershipFsmRef)),
                                                                                    drainCommandRegistry::clearDrain,
                                                                                    resolvedLocalConfig::get,
                                                                                    () -> kvStore.getTyped(AetherKey.AutoHealStateKey.SINGLETON,
@@ -312,6 +315,13 @@ public sealed interface TopologyAssembly {
                                                         node -> config.environment()
                                                                       .map(environment -> environment.isLocalCoreAdmissionAuthorized(node.id()))
                                                                       .or(false));
+        // #2136: the leader's SYNCING episodes per voter; its warnings reach the node's sink once the event layer exists (AetherNode binds it).
+        var stuckSyncingVoters = StuckSyncingVoters.stuckSyncingVoters(() -> clusterNode.leaderManager()
+                                                                                        .currentLeaderEpoch(),
+                                                                       clusterNode::isActive,
+                                                                       metricsCollector::sinceLastPong,
+                                                                       config.timeouts().cluster().pingInterval(),
+                                                                       System::nanoTime);
         var coreVoterReconciler = CoreVoterReconciler.coreVoterReconciler(config.self(),
                                                                           isLeaderSupplier,
                                                                           clusterNode::voterConfiguration,
@@ -323,7 +333,11 @@ public sealed interface TopologyAssembly {
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
                                                                           nodeReplacements::voterSwaps,
                                                                           FailedVoterEvidence.forNode(metricsCollector,
-                                                                                                      membershipFsmRef::get),
+                                                                                                      membershipFsmRef::get,
+                                                                                                      () -> clusterNode.voterConfiguration()
+                                                                                                                       .map(installed -> Set.copyOf(installed.members()))
+                                                                                                                       .or(Set.of()),
+                                                                                                      stuckSyncingVoters),
                                                                           clusterNode::reconfigure);
         var surplusRefusals = SurplusRefusals.surplusRefusals((node, cause) -> LOG.warn("Core voter reconciliation: surplus core {} not drained: {}",
                                                                                         node,
@@ -361,7 +375,8 @@ public sealed interface TopologyAssembly {
                                           leaderReconcilerRef,
                                           configuredCoreCountSupplier,
                                           clusterTopologyManager,
-                                          coreAdmission);
+                                          coreAdmission,
+                                          stuckSyncingVoters);
     }
 
     /// What `placementReconciler` reads from the assembly built so far.
@@ -716,6 +731,14 @@ public sealed interface TopologyAssembly {
         if (previous != current) {
             ctm.onClusterPhaseChanged(current);
         }
+    }
+
+    /// The FSM half of the cluster topology manager's synchronous drain sink (#3754): the leader's drain command is routed through
+    /// the authoritative `MembershipFsm` as a `DrainRequested` event, so the target moves to DEPARTING instead of the drain bypassing
+    /// the FSM. The holder is deref'd lazily: the sink is wired before the FSM exists, and before it the registry add alone applies
+    /// (boot window only). `DrainSink.synchronous` calls it after the gate returned, never under the manager's monitor.
+    static Consumer<NodeId> fsmDrainRequested(AtomicReference<MembershipFsm> membershipFsmRef) {
+        return target -> Option.option(membershipFsmRef.get()).onPresent(fsm -> fsm.onDrainRequested(target));
     }
 
     static Set<NodeId> bootstrapIdentities(Set<NodeId> configuredCores, Set<NodeId> voterHistory) {

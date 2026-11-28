@@ -395,12 +395,24 @@ public interface SliceRouter {
                                                       JsonCodec jsonCodec) {
                 var headers = mergeHeaders(headersForContentType(contentType), location);
 
-                return ResponseSerializer.serialize(value, contentType, jsonCodec).fold(_ -> problemResponse(HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                                                             "Serialization failed",
-                                                                                                             request),
-                                                                                        body -> HttpResponseData.httpResponseData(status,
-                                                                                                                                  headers,
-                                                                                                                                  body));
+                return ResponseSerializer.serialize(value, contentType, jsonCodec)
+                                         .onFailure(cause -> logSerializationFailure(cause, request))
+                                         .fold(_ -> problemResponse(HttpStatus.INTERNAL_SERVER_ERROR,
+                                                                    "Serialization failed",
+                                                                    request),
+                                               body -> HttpResponseData.httpResponseData(status, headers, body));
+            }
+
+            /// #3723: the serializer's cause is the only record of why a success could not be written. The client
+            /// body says "Serialization failed" and nothing more; the chain goes to the log with the requestId that
+            /// correlates it.
+            @Contract
+            private void logSerializationFailure(Cause cause, HttpRequestContext request) {
+                log.warn("[requestId={}] SliceRouter response serialization failed: {} {} (cause chain: {})",
+                         request.requestId(),
+                         request.method(),
+                         request.path(),
+                         HttpError.causeChain(cause));
             }
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {

@@ -71,7 +71,7 @@ class MavenProtocolRoutesTierNotAdmittedTest {
     /// the route answered 500 for every cause that was not a timeout or a tier refusal).
     @Test
     void handle_getWhoseHandlerFailsWithATypedCause_writesItsStatusThroughTheFunnel() {
-        var cause = new org.pragmatica.aether.api.ManagementServerError.NotFound("no such artifact");
+        var cause = org.pragmatica.aether.api.ManagementServerError.NotFound.literal("no such artifact");
         var routes = MavenProtocolRoutes.mavenProtocolRoutes(() -> nodeWith(failingHandler(cause)), SHORT_TIMEOUT);
         var response = new CapturingResponseWriter();
 

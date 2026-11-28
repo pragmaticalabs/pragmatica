@@ -30,6 +30,7 @@ import javax.tools.ToolProvider;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConsumerAssignmentValue.AssignmentToken;
@@ -236,9 +237,11 @@ class OldArityCallerTripwireTest {
         var found = new TreeMap<String, Integer>();
         var scanned = new int[]{0};
 
-        try (Stream<Path> files = Files.walk(root)) {
-            files.filter(path -> isSourceUnderScan(root.relativize(path).toString().replace('\\', '/')))
-                 .forEach(path -> scanSource(root, path, found, scanned));
+        try {
+            SourceWalk.files(root)
+                      .stream()
+                      .filter(path -> isSourceUnderScan(root.relativize(path).toString().replace('\\', '/')))
+                      .forEach(path -> scanSource(root, path, found, scanned));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

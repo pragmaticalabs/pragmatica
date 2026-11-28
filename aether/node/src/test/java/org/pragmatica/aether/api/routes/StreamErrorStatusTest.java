@@ -14,10 +14,13 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
-import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.RemovalCause;
 import org.pragmatica.aether.stream.StreamError;
@@ -30,6 +33,8 @@ import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.storage.StorageError;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
@@ -575,9 +580,7 @@ class StreamErrorStatusTest {
             var manager = StreamPartitionManager.streamPartitionManager();
 
             try {
-                var failure = RouteProbe.failureOf(apiRoutes(manager,
-                                                             org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory(),
-                                                             routerFailingWith(cause)),
+                var failure = RouteProbe.failureOf(apiRoutes(manager, registeredNamespaces(), routerFailingWith(cause)),
                                                    ManagementRoute.STREAM_READ,
                                                    List.of("ns", "orders", "1.0.0", "read", "0"),
                                                    Map.of());
@@ -619,21 +622,48 @@ class StreamErrorStatusTest {
     private static Stream<org.pragmatica.http.routing.Route<?>> apiRoutes(StreamPartitionManager manager,
                                                                          org.pragmatica.aether.slice.stream.StreamNamespacesService namespaces,
                                                                          StreamReadRouter router) {
-        var node = (ManageableNode) java.lang.reflect.Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
-                                                                             new Class[]{ManageableNode.class},
-                                                                             (_, method, _) -> {
-                                                                                 if (method.getName().equals("streamPartitionManager")) {
-                                                                                     return manager;
-                                                                                 }
-
-                                                                                 if (method.getName().equals("streamReadRouter")) {
-                                                                                     return router;
-                                                                                 }
-                                                                                 throw new UnsupportedOperationException(method.getName());
-                                                                             });
+        var node = StreamRouteFixtures.node(manager, router, catalogMirroring(manager, namespaces));
 
         return StreamApiRoutes.streamApiRoutes(() -> node, namespaces, ConsumerGroupCoordinator.noOp(), null)
                               .routes();
+    }
+
+    /// #1753, #1963: a stream route resolves the stream through the catalog (committed config or registry entry), never the answering
+    /// node's engine. A stream the engine holds or the registry lists is one the cluster committed, so the catalog commits it
+    /// here too, with the engine's partition count (2 when only the registry lists it); a stream neither holds is unknown.
+    private static KVStore<AetherKey, AetherValue> catalogMirroring(StreamPartitionManager manager,
+                                                                    org.pragmatica.aether.slice.stream.StreamNamespacesService namespaces) {
+        var store = StreamRouteFixtures.emptyStore();
+
+        for (var address : List.of(ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap(),
+                                   ResourceAddress.resourceAddress(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0").unwrap())) {
+            var engineKey = StreamManager.engineKey(address);
+
+            if (manager.streamInfo(engineKey).isPresent() || namespaces.lookup(address).isPresent()) {
+                var partitions = manager.streamInfo(engineKey).map(StreamPartitionManager.StreamInfo::partitions).or(2);
+
+                commit(store, engineKey, partitions);
+            }
+        }
+        return store;
+    }
+
+    private static void commit(KVStore<AetherKey, AetherValue> store, String engineKey, int partitions) {
+        var config = StreamConfig.streamConfig(engineKey, partitions, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000), "earliest");
+
+        store.process(store.createBatch(List.of(new Put<>(StreamConfigKey.streamConfigKey(engineKey), StreamConfigValue.streamConfigValue(config)))));
+    }
+
+    private static org.pragmatica.aether.slice.stream.StreamNamespacesService registeredNamespaces() {
+        var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+
+        namespaces.registry()
+                  .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address,
+                                                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                                                           java.time.Instant.now()))
+                  .onFailure(failure -> fail(failure.message()));
+        return namespaces;
     }
 
     private static String describe(Object key) {

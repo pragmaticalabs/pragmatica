@@ -937,10 +937,10 @@ public final class ClusterConfigRoutes implements RouteSource {
         }
 
         if (runs.status().filter(UpgradeRunValue::live).isPresent()) {
-            return new ManagementServerError.Conflict("An upgrade run to " + runs.status()
-                                                                                 .unwrap()
-                                                                                 .targetVersion()
-                                                     + " is still live; pause/resume/abort it (GET /api/v1/upgrade/status), or wait for it to end").promise();
+            return ManagementServerError.Conflict.literal("An upgrade run to " + runs.status()
+                                                                                     .unwrap()
+                                                                                     .targetVersion()
+                                                         + " is still live; pause/resume/abort it (GET /api/v1/upgrade/status), or wait for it to end").promise();
         }
 
         return checkVersionAsync(stored.configVersion(),
@@ -1019,12 +1019,12 @@ public final class ClusterConfigRoutes implements RouteSource {
         // No committed leader is an election in progress, which is transient (503, as the forward layer answers it).
         // A committed leader that is not this node is a state this node refuses (409): retry against the leader.
         if (committedLeader.isEmpty()) {
-            return new ManagementServerError.ServiceUnavailable("No core leader is committed yet; an election is in progress. Retry shortly.").<ClusterConfigValue> promise();
+            return ManagementServerError.ServiceUnavailable.literal("No core leader is committed yet; an election is in progress. Retry shortly.").<ClusterConfigValue> promise();
         }
 
         return committedLeader.filter(leader -> node.isLeader() && leader.leader()
                                                                          .equals(node.self()))
-                              .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
+                              .fold(() -> ManagementServerError.Conflict.literal("Current core leader required for config update").<ClusterConfigValue> promise(),
                                     leader -> submitFenced(node, leader, fence, intended));
     }
 

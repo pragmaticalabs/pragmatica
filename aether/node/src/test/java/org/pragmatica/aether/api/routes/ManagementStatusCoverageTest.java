@@ -52,6 +52,7 @@ class ManagementStatusCoverageTest {
     private static final String API = "org.pragmatica.aether.api.";
     private static final String ROUTES = API + "routes.";
     private static final Map<String, String> PINNED = new TreeMap<>(Map.ofEntries(
+            entry(API + "AlertForwarder$AlertForwarderError$Stopped", "SERVICE_UNAVAILABLE"),
             entry(API + "AlertForwarder$AlertForwarderError$WebhookError", "BAD_GATEWAY"),
             entry(API + "AlertManager$InjectionError#INVALID_SEVERITY", "BAD_REQUEST"),
             entry(API + "AlertManager$InjectionError#MESSAGE_REQUIRED", "BAD_REQUEST"),
@@ -116,6 +117,7 @@ class ManagementStatusCoverageTest {
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#IMMUTABLE_ROLE", "CONFLICT"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#MISSING_TARGET_ROLE", "BAD_REQUEST"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#UNKNOWN_NODE_ROLE", "CONFLICT"),
+            entry(ROUTES + "ManagementRouter$DuplicateRoute", "INTERNAL_SERVER_ERROR"),
             entry(ROUTES + "NodeLifecycleRoutes$PromoteError#UNSUPPORTED_TARGET_ROLE", "BAD_REQUEST"),
             entry(ROUTES + "NodeLifecycleRoutes$SliceFloorBreached", "CONFLICT"),
             entry(ROUTES + "NotImplementedRoutes$NotImplemented", "NOT_IMPLEMENTED"),

@@ -24,13 +24,11 @@ import org.pragmatica.aether.node.stream.StreamConsumerManager.PartitionCursor;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.StreamConfig;
-import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.HydrationSnapshot;
-import org.pragmatica.aether.stream.StreamPartitionManager.PartitionInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamInfo;
 import org.pragmatica.aether.stream.StreamPartitionManager.StreamHydration;
 import org.pragmatica.aether.stream.StreamReadRouter;
@@ -55,7 +53,7 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public final class StreamRoutes implements RouteSource {
-    private static final Cause MISSING_STREAM_NAME = new ManagementServerError.InvalidRequest("Missing stream name");
+    private static final Cause MISSING_STREAM_NAME = ManagementServerError.InvalidRequest.literal("Missing stream name");
 
     /// The refusal carries the status the pre-auth path gate answers with (405, see
     /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`
@@ -101,10 +99,6 @@ public final class StreamRoutes implements RouteSource {
     }
 
     record PartitionDetail(int partition, long headOffset, long tailOffset, long eventCount) {
-        static PartitionDetail fromPartitionInfo(PartitionInfo info) {
-            return new PartitionDetail(info.partition(), info.headOffset(), info.tailOffset(), info.eventCount());
-        }
-
         /// #1478: the owner-reported view. `VisibleBounds` carries no count, so it is derived from the
         /// retained span; an empty partition uses the same `(-1, -1, 0)` encoding as a ring-less one.
         static PartitionDetail fromBounds(int partition, VisibleBounds bounds) {
@@ -117,7 +111,12 @@ public final class StreamRoutes implements RouteSource {
         }
     }
 
-    record StreamConsumersResponse(String name, List<PartitionInfo> partitions) {}
+    record StreamConsumersResponse(String name, List<PartitionDetail> partitions) {
+        /// #1963: every partition is the owner-reported view ([PartitionDetail#fromBounds]), not this node's ring.
+        static StreamConsumersResponse streamConsumersResponse(String engineKey, List<PartitionDetail> partitions) {
+            return new StreamConsumersResponse(engineKey, partitions);
+        }
+    }
 
     record JoinGroupRequest(String groupId, String streamName, int partitionCount, String consumerId) {}
 
@@ -134,7 +133,7 @@ public final class StreamRoutes implements RouteSource {
         // addressing. #968 moved STREAM_CREATE there too: its body-carried name is now parsed as a
         // catalog address and it shares the catalog-registering create chain with STREAMS_CREATE,
         // instead of minting rings no catalog read could find. See #742's closing comment for why
-        // this file remains: STREAM_CONSUMERS/CONSUMER_GROUP_STATUS have no catalog home and
+        // this file remains: CONSUMER_GROUP_STATUS has no catalog home and
         // CONSUMER_GROUP_JOIN/LEAVE are excluded from this fold (capability mismatch against their
         // nearest catalog candidates, tracked separately).
         return Stream.of(
@@ -147,13 +146,6 @@ public final class StreamRoutes implements RouteSource {
                         .asJson(),
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<DeclarativeConsumersResponse> route(ManagementRoute.STREAM_DECLARATIVE_CONSUMERS).toJson(this::declarativeConsumers),
-                         ManagementRoutes.<StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
-                                         .withPath(PathParameter.aString(),
-                                                   PathParameter.aString(),
-                                                   PathParameter.aString(),
-                                                   PathParameter.spacer("consumers"))
-                                         .toResult(this::streamConsumers)
-                                         .asJson(),
                          ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_JOIN)
                                          .withBody(JoinGroupRequest.class)
                                          .toResult(this::joinGroup)
@@ -332,17 +324,6 @@ public final class StreamRoutes implements RouteSource {
                                                                                                                                                            DEFAULT_PARTITIONS,
                                                                                                                                                            StreamApiRoutes.defaultRetention(DEFAULT_PARTITIONS),
                                                                                                                                                            "latest")));
-    }
-
-    /// `GET /streams/{namespace}/{stream}/{version}/consumers` -- the route's path carries the whole catalog address, so the
-    /// engine is asked by the key that address maps to, the same one the catalog-scoped stream routes use (#1921). `consumersLiteral`
-    /// binds the trailing `spacer("consumers")` segment, which `RequestContext.matchPath` binds positionally like any other slot.
-    private Result<StreamConsumersResponse> streamConsumers(String namespace,
-                                                            String stream,
-                                                            String version,
-                                                            String consumersLiteral) {
-        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> StreamErrorStatus.typed(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
-                                                                                                                                                                                                                                                                partitions)));
     }
 
     /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is

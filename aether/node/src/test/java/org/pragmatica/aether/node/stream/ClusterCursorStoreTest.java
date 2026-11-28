@@ -216,6 +216,34 @@ class ClusterCursorStoreTest {
                  .onSuccess(offset -> assertThat(offset).isEqualTo(Option.some(70L)));
         }
 
+        /// #3726 verification m11: `fetch(group, stream, partition)` (the unfenced pull API) keeps its LOCAL half. A commit that went LocalOnly leaves the
+        /// local offset ahead of the committed one, and the fetch must return it; the cluster-ahead case above does not see the local half at all.
+        @Test
+        void fetchUnfenced_keepsTheLocalOffset_whenItIsAheadOfTheCommittedOne() {
+            var store = storeWith(fixedLocal(Option.some(90L)), _ -> Option.some(checkpoint(70L, SELF_TOKEN)), _ -> Promise.unitPromise());
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.some(90L)));
+        }
+
+        /// The cluster half of the same unfenced fetch: a committed offset ahead of the local one wins.
+        @Test
+        void fetchUnfenced_takesTheCommittedOffset_whenItIsAheadOfTheLocalOne() {
+            var store = storeWith(fixedLocal(Option.some(10L)), _ -> Option.some(checkpoint(70L, SELF_TOKEN)), _ -> Promise.unitPromise());
+
+            assertThat(store.fetch(GROUP, STREAM, PARTITION).await()).isEqualTo(Result.success(Option.some(70L)));
+        }
+
+        /// #3726 verification m12: `fetchCursor` (the fenced resume) keeps its LOCAL half through the store, not only through the static `resumeCursor`. Local
+        /// and cluster are at the same (absent) rewind epoch, local ahead, so the local cursor is the later one.
+        @Test
+        void fetchCursor_keepsTheLocalCursor_whenItIsAheadOfTheCommittedOne() {
+            var store = storeWith(fixedLocal(Option.some(90L)), _ -> Option.some(checkpoint(70L, SELF_TOKEN)), _ -> Promise.unitPromise());
+
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, EPOCH).await().map(cursor -> cursor.map(Cursor::offset)))
+                    .isEqualTo(Result.success(Option.some(90L)));
+            assertThat(store.fetch(GROUP, STREAM, PARTITION, EPOCH).await()).isEqualTo(Result.success(Option.some(90L)));
+        }
+
         /// #1271: under an assignment, the local half of `max(local, cluster)` counts only when written
         /// under THAT assignment's epoch — a local cursor from an earlier tenure can be ahead of what the
         /// successor committed, and resuming from it would skip events.

@@ -2147,6 +2147,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_ASSIGNMENT_PLACED,
                 OperatorWarningCode.APPLY_DEADLINE_CLEARED,
+                OperatorWarningCode.PLACEMENT_AUDIENCE_AVAILABLE,
                 // #2825: the warning belongs to an earlier boot; the raiser's marker file owns "is it open"
                 OperatorWarningCode.STREAM_DATA_ABANDONED_CLEARED,
             });
@@ -2973,7 +2974,7 @@ class ClusterEventAggregatorTest {
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the three consumer pairs of #2201
     /// C-16 (behind the ring, the hole, and the cursor expiry), the held detach flush of #1960, the 13 FSM2 recoveries of the D.6 ruling (#2761) and the schema-migration stall pair (#2773), the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316, a stream partition's WAL fail-stop of #2201, the stuck-SYNCING core voter of #2136); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the departure sole-copy pair of #2034); every other code keeps the plain 60 s throttle.
     /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement and rolling-upgrade conditions of #1543, the HTTP-listener TLS rotation refusal, the storage promotion stall and the refused live JSON settings of #2378, the corrupt durable anchor of #2450, the refused consensus restore of #2316); every other code keeps the plain 60 s throttle.
     @Test
@@ -3001,6 +3002,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_RESTORED,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_RESUMED,
                 OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_SETTLED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_READABLE,
                 OperatorWarningCode.STREAM_RETENTION_RESUMED,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE_RECLAIMED,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_RECOVERED,
@@ -3018,6 +3020,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
                 OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
+                OperatorWarningCode.CONSENSUS_QUORUM_COMPLETE,
                 OperatorWarningCode.IDENTITY_LEDGER_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                 OperatorWarningCode.GENESIS_SEAT_REACHABLE,
@@ -3033,6 +3036,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_RESOLVED,
                 OperatorWarningCode.WORKFLOW_RESOLVED,
                 OperatorWarningCode.OBSERVER_CONSENSUS_RESUMED,
+                OperatorWarningCode.CORE_VOTER_SYNCING_ENDED,
                 OperatorWarningCode.COMMUNITY_GROWTH_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_RESUMED,
                 OperatorWarningCode.COMMUNITY_PLACEMENT_CLEARED,
@@ -3090,6 +3094,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.WORKER_ABSENCE_JUDGEABLE,
                 OperatorWarningCode.WORKER_COMMUNITY_POLICY_MATCHED,
                 OperatorWarningCode.APPLY_DEADLINE_CLEARED,
+                OperatorWarningCode.PLACEMENT_AUDIENCE_AVAILABLE,
             });
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(new OperatorWarningCode[]{
@@ -3115,6 +3120,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CONSUMER_SEALED_RANGE_MISSING,
                 OperatorWarningCode.STREAM_CONSUMER_CURSOR_EXPIRED,
                 OperatorWarningCode.STREAM_CONSUMER_DETACH_WAIT_EXCEEDED,
+                OperatorWarningCode.STREAM_CONSUMER_CURSOR_UNREADABLE,
                 OperatorWarningCode.STREAM_RETENTION_WITHHELD,
                 OperatorWarningCode.STREAM_SEGMENT_UNREADABLE,
                 OperatorWarningCode.STREAM_SEGMENT_DELETE_FAILING,
@@ -3125,6 +3131,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.AUTO_HEAL_SCALING_HELD,
                 OperatorWarningCode.CORE_CAPACITY_AWAITING_DURABLE,
                 OperatorWarningCode.CORE_REPLACEMENT_SOURCE_UNRESOLVED,
+                OperatorWarningCode.CORE_VOTER_SYNCING_STUCK,
                 OperatorWarningCode.WORKFLOW_ESCALATED,
                 OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                 OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
@@ -3137,6 +3144,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
                 OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
                 OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
+                OperatorWarningCode.CONSENSUS_QUORUM_INCOMPLETE,
                 OperatorWarningCode.IDENTITY_LEDGER_NOT_DURABLE,
                 OperatorWarningCode.BACKUP_CONFIG_MISSING,
                 OperatorWarningCode.BACKUP_RESTORE_BLOCKED,
@@ -3182,6 +3190,7 @@ class ClusterEventAggregatorTest {
                 OperatorWarningCode.DEPARTURE_INFERRED_SUPPRESSED,
                 OperatorWarningCode.DEPLOYMENT_ENGINE_MISMATCH,
                 OperatorWarningCode.INVALID_PLACEMENT,
+                OperatorWarningCode.PLACEMENT_AUDIENCE_EMPTY,
                 OperatorWarningCode.JOIN_UNMATCHED,
                 OperatorWarningCode.RETRY_EXHAUSTED_UNSETTLED,
                 OperatorWarningCode.SCHEMA_HOLD,

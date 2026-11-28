@@ -14,9 +14,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,15 +93,15 @@ class OwedWarningCodesTripwireTest {
         var texts = new ArrayList<String>();
 
         for (var top : List.of("aether", "integrations")) {
-            try (Stream<Path> walk = Files.walk(root.resolve(top))) {
-                var files = walk.filter(path -> path.toString().endsWith(".java"))
-                                .filter(path -> path.toString().contains("/src/main/java/"))
-                                .filter(path -> !path.endsWith("OperatorWarningCode.java"))
-                                .toList();
+            var files = SourceWalk.files(root.resolve(top))
+                                  .stream()
+                                  .filter(path -> path.toString().endsWith(".java"))
+                                  .filter(path -> path.toString().contains("/src/main/java/"))
+                                  .filter(path -> !path.endsWith("OperatorWarningCode.java"))
+                                  .toList();
 
-                for (var file : files) {
-                    texts.add(stripComments(Files.readString(file)));
-                }
+            for (var file : files) {
+                texts.add(stripComments(Files.readString(file)));
             }
         }
         return texts;

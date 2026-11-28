@@ -5,6 +5,7 @@
 package org.pragmatica.aether.stream;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -36,6 +37,8 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.Pause;
+import org.pragmatica.testing.PollUntil;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -277,7 +280,7 @@ class OwnerActivationTest {
         unreachable.add(PEER_A);
 
         assertThat(activation.admit(STREAM, PARTITION).isFailure()).isTrue();
-        LockSupport.parkNanos(50_000_000L);
+        Pause.pause(Duration.ofMillis(50));
         unreachable.remove(PEER_A);
 
         assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no further demand").isTrue();
@@ -355,7 +358,7 @@ class OwnerActivationTest {
         peerTail.set(Option.some(11L));
 
         assertThat(activation.admit(STREAM, PARTITION).isFailure()).as("refused at first").isTrue();
-        LockSupport.parkNanos(50_000_000L);
+        PollUntil.pollUntil(alarms::size, size -> size > 0, Duration.ofSeconds(10)).assertMet("the refusal is reported");
         assertThat(alarms).as("the refusal is reported").isNotEmpty();
         divergent.remove(PEER_A);
 
@@ -493,11 +496,7 @@ class OwnerActivationTest {
 
     /// Parks until the deadline: an early return of one park (spurious wake-up, interrupt) must not shorten the quiet period.
     private static void quietFor(long millis) {
-        var deadline = System.nanoTime() + millis * 1_000_000L;
-
-        while (System.nanoTime() < deadline) {
-            LockSupport.parkNanos(deadline - System.nanoTime());
-        }
+        Pause.pause(Duration.ofMillis(millis));
     }
 
     private boolean eventuallyActivatedWithin(long millis) {
@@ -1229,9 +1228,9 @@ class OwnerActivationTest {
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
         gate.activate(STREAM, PARTITION).await();
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
         assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("went ahead, epoch start refused").isFalse();
 
         unreachable.remove(PEER_A);
@@ -1251,9 +1250,9 @@ class OwnerActivationTest {
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
         gate.activate(STREAM, PARTITION).await();
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
         assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("went ahead, epoch start refused").isFalse();
 
         record.set(Option.some(ownedBy(PEER_B, 9)));
@@ -1326,7 +1325,7 @@ class OwnerActivationTest {
     }
 
     private boolean runGate(OwnerActivation gate) {
-        LockSupport.parkNanos(2_000_000L);
+        Pause.pause(Duration.ofMillis(2));
 
         return gate.activate(STREAM, PARTITION).await().isSuccess();
     }
@@ -1801,7 +1800,7 @@ class OwnerActivationTest {
         members.set(List.of(SELF, PEER_A));
 
         activation.onCommittedOwnership(STREAM, PARTITION, Option.some(ownedBy(SELF, 1)), other);
-        LockSupport.parkNanos(300_000_000L);
+        Pause.pause(Duration.ofMillis(300));
 
         assertThat(rounds).as("no gate ran").hasValue(0);
         assertThat(catchUps).isEmpty();
@@ -1816,7 +1815,7 @@ class OwnerActivationTest {
 
         record.set(Option.some(widened));
         activation.onCommittedOwnership(STREAM, PARTITION, Option.some(owned), widened);
-        LockSupport.parkNanos(300_000_000L);
+        Pause.pause(Duration.ofMillis(300));
 
         assertThat(rounds).as("an ISR change on a not-yet-activated owner starts no gate").hasValue(0);
 
@@ -1826,7 +1825,7 @@ class OwnerActivationTest {
 
         record.set(Option.some(widened));
         activation.onCommittedOwnership(STREAM, PARTITION, Option.some(owned), widened);
-        LockSupport.parkNanos(300_000_000L);
+        Pause.pause(Duration.ofMillis(300));
 
         assertThat(rounds.get()).as("nor on an activated one").isEqualTo(roundsWhenActivated);
         assertThat(activation.isActivated(STREAM, PARTITION)).as("and the activation stands").isTrue();
@@ -1843,7 +1842,7 @@ class OwnerActivationTest {
         unreachable.add(PEER_A);
 
         activation.onCommittedOwnership(STREAM, PARTITION, Option.none(), owned);
-        LockSupport.parkNanos(50_000_000L);
+        Pause.pause(Duration.ofMillis(50));
         unreachable.remove(PEER_A);
 
         assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven with no demand").isTrue();

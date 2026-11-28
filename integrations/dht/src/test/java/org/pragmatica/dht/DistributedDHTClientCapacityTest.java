@@ -52,8 +52,12 @@ class DistributedDHTClientCapacityTest {
         ring.addNode(REMOTE_2);
         var node = dhtNode(LOCAL, memoryStorageEngine(), ring, DHTConfig.DEFAULT);
 
-        // RF=3, W=2: every node is a target
-        client = distributedDHTClient(node, AcceptingNetwork.accepting((target, message) -> sent.add(new Sent(target, message))), DHTConfig.DEFAULT);
+        // RF=3, W=2: every node is a target. The writer stamps a REAL owner epoch: a fence refusal of a floor-stamped put is
+        // OwnershipNotApplied (#3720, DHTOwnerEpochStampTest), and the control below pins the other kind.
+        client = distributedDHTClient(node,
+                                      AcceptingNetwork.accepting((target, message) -> sent.add(new Sent(target, message))),
+                                      DHTConfig.DEFAULT,
+                                      () -> OwnerEpochSource.OwnerEpoch.ownerEpoch(0L, 1L, 1L));
     }
 
     private static byte[] bytes(String text) {
@@ -115,7 +119,7 @@ class DistributedDHTClientCapacityTest {
         assertThat(result.await().<Cause>fold(cause -> cause, _ -> null)).isInstanceOf(DHTError.ReplicaFull.class);
     }
 
-    /// Control: with no capacity refusal the answers stay what they were (the fence refusal is still indeterminate).
+    /// Control: with no capacity refusal the answers stay what they were (the fence refusal of a put stamped with a real epoch is still indeterminate).
     @Test
     void withoutACapacityRefusal_theFenceRefusalStaysAsToday() {
         var result = client.put(bytes("stream-segments/block"), new byte[10]);

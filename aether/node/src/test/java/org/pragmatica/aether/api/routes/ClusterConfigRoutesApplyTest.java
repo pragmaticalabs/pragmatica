@@ -747,10 +747,10 @@ class ClusterConfigRoutesApplyTest {
 
             refusals.forEach((cause, code) -> assertThat(problemBody(cause)).as("code of %s", cause.getClass().getSimpleName())
                                                                             .contains("\"code\":\"" + code + "\""));
-            assertThat(problemBody(new ManagementServerError.Conflict("Current core leader required for config update")))
+            assertThat(problemBody(ManagementServerError.Conflict.literal("Current core leader required for config update")))
                 .as("the transient leader-required 409 stays untyped")
                 .doesNotContain("\"code\"");
-            assertThat(problemBody(new ManagementServerError.ServiceUnavailable("election")))
+            assertThat(problemBody(ManagementServerError.ServiceUnavailable.literal("election")))
                 .as("the transient election 503 stays untyped")
                 .doesNotContain("\"code\"");
         }

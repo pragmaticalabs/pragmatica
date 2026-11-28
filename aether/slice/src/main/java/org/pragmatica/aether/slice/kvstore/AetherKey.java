@@ -2577,8 +2577,17 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> BACKUP_RESTORE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid backup-restore key format: %s");
 
-    record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey {
+    /// GUARDED by the committed [StreamConfigKey] of its stream (#3041): the applier admits a write here only while the
+    /// stream is committed and the write names that very life (its token equals the config's incarnation). A stream
+    /// that was deleted, or deleted and recreated, therefore refuses every write minted under its earlier life, which
+    /// is what lets the records of a dead life be reclaimed without reopening the race an epoch tombstone closes.
+    record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey, AssignmentGuarded {
         private static final String PREFIX = "consumer-group/";
+
+        @Override
+        public Object guardKey() {
+            return StreamConfigKey.streamConfigKey(streamName);
+        }
 
         @Override
         public String asString() {

@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net.quic;
 
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -49,6 +50,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.StreamType;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.testing.Pause;
 
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.net.quic.TransportTripwireFixtures.observeAttaches;
@@ -100,7 +102,7 @@ class QuicSimultaneousDialLaneTest {
         // fixed settle can ride the link about to be closed. Wait for the decision at BOTH ends.
         awaitTrue(() -> ownDialDecided(lowNet, lowAttaches) && ownDialDecided(highNet, highAttaches),
                   () -> "both ends' own dials decided");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(SETTLE_MILLIS));
+        Pause.pause(Duration.ofMillis(SETTLE_MILLIS));
         spraying.set(false);
         spray.orTimeout(AWAIT.millis(), TimeUnit.MILLISECONDS).join();
         Arrays.stream(StreamType.values())

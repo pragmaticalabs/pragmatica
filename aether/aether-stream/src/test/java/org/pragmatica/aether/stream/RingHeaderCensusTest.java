@@ -11,9 +11,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -112,15 +112,13 @@ class RingHeaderCensusTest {
         var elsewhere = new ArrayList<String>();
         var inRingHeader = 0L;
 
-        try (Stream<Path> files = Files.walk(AETHER_ROOT)) {
-            for (var file : files.filter(RingHeaderCensusTest::isAetherMainJava).toList()) {
-                var hits = HEADER_OFFSET_NAME.matcher(Files.readString(file)).results().count();
+        for (var file : SourceWalk.files(AETHER_ROOT).stream().filter(RingHeaderCensusTest::isAetherMainJava).toList()) {
+            var hits = HEADER_OFFSET_NAME.matcher(Files.readString(file)).results().count();
 
-                if (file.getFileName().toString().equals("RingHeader.java")) {
-                    inRingHeader += hits;
-                } else if (hits > 0) {
-                    elsewhere.add(file.toString());
-                }
+            if (file.getFileName().toString().equals("RingHeader.java")) {
+                inRingHeader += hits;
+            } else if (hits > 0) {
+                elsewhere.add(file.toString());
             }
         }
 

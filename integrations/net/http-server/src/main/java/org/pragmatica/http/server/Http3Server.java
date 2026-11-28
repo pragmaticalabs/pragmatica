@@ -149,43 +149,47 @@ final class Http3Server {
 
     /// Create and start an HTTP/3 server with its own event loop group.
     static Promise<Http3Server> create(HttpServerConfig config,
-                                       QuicSslContext quicSslContext,
+                                       LiveTls<QuicSslContext> liveTls,
                                        BiConsumer<HttpRequest, ResponseWriter> handler) {
         var group = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
 
-        return bind(config, quicSslContext, handler, group, true);
+        return bind(config, liveTls, handler, group, true);
     }
 
     /// Create and start an HTTP/3 server using an externally managed event loop group.
     static Promise<Http3Server> createShared(HttpServerConfig config,
-                                             QuicSslContext quicSslContext,
+                                             LiveTls<QuicSslContext> liveTls,
                                              BiConsumer<HttpRequest, ResponseWriter> handler,
                                              EventLoopGroup workerGroup) {
-        return bind(config, quicSslContext, handler, workerGroup, false);
+        return bind(config, liveTls, handler, workerGroup, false);
     }
 
     /// Package-private so the #1612 tests can pass an owned group and check its termination at the moment a
     /// failed create reports.
     static Promise<Http3Server> bind(HttpServerConfig config,
-                                     QuicSslContext quicSslContext,
+                                     LiveTls<QuicSslContext> liveTls,
                                      BiConsumer<HttpRequest, ResponseWriter> handler,
                                      EventLoopGroup group,
                                      boolean ownsGroup) {
-        return bind(config, quicSslContext, handler, group, ownsGroup, none());
+        return bind(config, liveTls, handler, group, ownsGroup, none());
     }
 
     /// #2310 test seam: `streamWriteInterceptor` supplies, per request stream, a handler installed between the HTTP/3
     /// frame codec and the request handler, so a test can fail a response frame write the way a transport failure
     /// would. Production passes none.
+    ///
+    /// #2032: the engine provider reads `liveTls` once per NEW connection (Netty's server codec calls it for each
+    /// connection it accepts), so a [LiveTls#swap] reaches every later connection while open ones keep their engine.
     @SuppressWarnings("JBCT-UTIL-01")
     static Promise<Http3Server> bind(HttpServerConfig config,
-                                     QuicSslContext quicSslContext,
+                                     LiveTls<QuicSslContext> liveTls,
                                      BiConsumer<HttpRequest, ResponseWriter> handler,
                                      EventLoopGroup group,
                                      boolean ownsGroup,
                                      Option<Supplier<ChannelHandler>> streamWriteInterceptor) {
         var codec = Http3.newQuicServerCodecBuilder()
-                         .sslContext(quicSslContext)
+                         .sslEngineProvider(quic -> liveTls.current()
+                                                           .newEngine(quic.alloc()))
                          .maxIdleTimeout(5000, TimeUnit.MILLISECONDS)
                          .initialMaxData(10_000_000)
                          .initialMaxStreamDataBidirectionalLocal(1_000_000)

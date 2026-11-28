@@ -22,10 +22,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
@@ -58,8 +60,13 @@ class FlakeScanTest {
                                         .hasSizeGreaterThan(MINIMUM_EXAMINED_FILES)
                                         .contains("testing/src/test/java/org/pragmatica/testing/FlakeScanTest.java");
         assertThat(scan.hits()).as("positive control: the allow-listed census is still seen by the scan").isNotEmpty();
-        assertThat(FlakeScan.problems(scan.hits(), FlakeScan.entries(Files.readString(root.resolve(ALLOW_LIST))), COMMITTED_ENTRIES))
-            .as("flake patterns outside the allow-list, stale or grown allow-list entries")
+        assertThat(scan.hits()).as("positive control: the declared walks are still seen by the scan")
+                               .anyMatch(hit -> hit.kind() == FlakeScan.Kind.REPO_WALK);
+        assertThat(FlakeScan.problems(scan.hits(),
+                                      FlakeScan.entries(Files.readString(root.resolve(ALLOW_LIST))),
+                                      COMMITTED_ENTRIES,
+                                      RepoWalkExceptions.declaredWalks()))
+            .as("flake patterns outside the allow-list, walks outside the declared exceptions, stale or grown allow-list entries")
             .isEmpty();
     }
 
@@ -120,6 +127,105 @@ class FlakeScanTest {
     }
 
     @Test
+    void problems_aWalkWithoutADeclaration_isReportedWithFileLineAndTheSourceWalkFix() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of());
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("REPO_WALK", "m/src/test/java/A.java:1", "SourceWalk.files(root)", "RepoWalkExceptions");
+    }
+
+    @Test
+    void scan_aSingleCallParkNanosSleep_isFlaggedAsParkSleep_andNeverExcused() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        assertThat(hits).extracting(FlakeScan.Hit::kind).containsExactly(FlakeScan.Kind.PARK_SLEEP);
+        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1, Map.of())).anyMatch(problem -> problem.contains("PARK_SLEEP at"));
+    }
+
+    @Test
+    void problems_aParkSleepHit_namesPollUntilAndPauseAsTheFix() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", methodBody("LockSupport.park" + "Nanos(1_000_000L);"))).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of());
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("flake pattern PARK_SLEEP at m/src/test/java/A.java:",
+                                                 "org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline)",
+                                                 "org.pragmatica.testing.Pause.pause(duration)");
+    }
+
+    @Test
+    void scan_aParkNanosInsideALoop_isNotFlagged() throws IOException {
+        var scan = FlakeScan.scan(plant("A.java", methodBody("while (!done()) {", "    LockSupport.park" + "Nanos(1_000L);", "}")));
+
+        assertThat(scan.examinedFiles()).containsExactly("m/src/test/java/A.java");
+        assertThat(scan.hits()).isEmpty();
+    }
+
+    @Test
+    void problems_aWalkThatIsNeverAnAllowListEntry_isStillReportedWhenTheListNamesIt() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
+
+        assertThat(FlakeScan.problems(hits, List.of(hits.getFirst().key()), 1, Map.of())).hasSize(2)
+                                                                                         .anyMatch(problem -> problem.contains("REPO_WALK at"))
+                                                                                         .anyMatch(problem -> problem.contains("stale allow-list entry"));
+    }
+
+    @Test
+    void problems_aDeclaredWalk_isNotReported() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
+
+        assertThat(FlakeScan.problems(hits, List.of(), 0, Map.of("m/src/test/java/A.java", 1))).isEmpty();
+    }
+
+    @Test
+    void problems_aWalkBeyondTheDeclaredCount_isReported() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", walkLine() + "\n" + walkLine())).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of("m/src/test/java/A.java", 1));
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("REPO_WALK", "m/src/test/java/A.java:2");
+    }
+
+    @Test
+    void problems_aDeclarationForAnotherFile_doesNotExcuseThisOne() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", walkLine())).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of("m/src/test/java/B.java", 1));
+
+        assertThat(problems).hasSize(2)
+                            .anyMatch(problem -> problem.contains("REPO_WALK at m/src/test/java/A.java:1"))
+                            .anyMatch(problem -> problem.contains("stale REPO_WALK declaration") && problem.contains("B.java"));
+    }
+
+    @Test
+    void problems_aDeclarationWhoseWalkIsGone_isReportedStale() throws IOException {
+        var hits = FlakeScan.scan(plant("A.java", "int unrelated = 1;")).hits();
+
+        var problems = FlakeScan.problems(hits, List.of(), 0, Map.of("m/src/test/java/A.java", 2));
+
+        assertThat(problems).hasSize(1);
+        assertThat(problems.getFirst()).contains("stale REPO_WALK declaration", "x2", "m/src/test/java/A.java", "delete it from RepoWalkExceptions");
+    }
+
+    @Test
+    void scan_theFormsThatAreNotAWalkOfTheTree_areNotFlagged() throws IOException {
+        var source = String.join("\n",
+                                 "// " + walkLine(),
+                                 "/// the old " + walkLine(),
+                                 " * " + walkLine(),
+                                 "for (var file : SourceWalk.files(root)) {",
+                                 "try (var names = Files" + ".list(directory)) {",
+                                 "try (var names = Files" + ".newDirectoryStream(directory)) {",
+                                 "var found = Files" + ".readString(path);");
+
+        assertThat(FlakeScan.scan(plant("A.java", source)).hits()).isEmpty();
+    }
+
+    @Test
     void hash_ignoresSurroundingWhitespaceAndCollapsesInnerRuns() {
         assertThat(FlakeScan.hash("  a \t b  ")).isEqualTo(FlakeScan.hash("a b"));
     }
@@ -134,8 +240,6 @@ class FlakeScanTest {
         planted.put("int httpPort" + " = 8080;", FlakeScan.Kind.FIXED_PORT);
         planted.put("long udpPort" + " = 9000;", FlakeScan.Kind.FIXED_PORT);
         planted.put("Integer serverPort" + " = 9100;", FlakeScan.Kind.FIXED_PORT);
-        planted.put("var s = new ServerSocket(" + "9100);", FlakeScan.Kind.FIXED_PORT);
-        planted.put("var d = new DatagramSocket(" + "9200);", FlakeScan.Kind.FIXED_PORT);
         planted.put("server.bind" + "(8081);", FlakeScan.Kind.FIXED_PORT);
         planted.put("server.listen" + "(8082);", FlakeScan.Kind.FIXED_PORT);
         planted.put("config.withPort" + "(8083);", FlakeScan.Kind.FIXED_PORT);
@@ -159,6 +263,10 @@ class FlakeScanTest {
         planted.put("await().atMost(" + "300, TimeUnit.MILLISECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
         planted.put("await().atMost(" + "3, TimeUnit.SECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
         planted.put("await().atMost(" + "4, SECONDS).until(ready);", FlakeScan.Kind.SHORT_AWAIT);
+        planted.put("try (var files = Files" + ".walk(root)) {", FlakeScan.Kind.REPO_WALK);
+        planted.put("Files" + ".walkFileTree(root, visitor);", FlakeScan.Kind.REPO_WALK);
+        planted.put("var found = Files" + ".find(root, 9, (path, attributes) -> true);", FlakeScan.Kind.REPO_WALK);
+        planted.put("try (var files = java.nio.file.Files" + " .walk(root)) {", FlakeScan.Kind.REPO_WALK);
 
         var hits = FlakeScan.scan(plant("A.java", String.join("\n", planted.keySet()))).hits();
 
@@ -174,8 +282,6 @@ class FlakeScanTest {
         planted.put(wrapped("Thread", "    .sleep" + "(100);"), FlakeScan.Kind.SLEEP);
         planted.put(wrapped("java.util.concurrent.TimeUnit.SECONDS", "    .sleep" + "(1);"), FlakeScan.Kind.SLEEP);
         planted.put(wrapped("int httpPort", "    = 8080;"), FlakeScan.Kind.FIXED_PORT);
-        planted.put(wrapped("var s = new ServerSocket(", "    9100);"), FlakeScan.Kind.FIXED_PORT);
-        planted.put(wrapped("var d = new DatagramSocket(", "    9200);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("server.bind" + "(", "    8081);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("config.withPort" + "(", "    8083);"), FlakeScan.Kind.FIXED_PORT);
         planted.put(wrapped("assertThat(elapsedMs)", "    .isLess" + "Than(500);"), FlakeScan.Kind.WALL_CLOCK_BOUND);
@@ -197,6 +303,10 @@ class FlakeScanTest {
         planted.put(wrapped("await().atMost(Duration", "    .ofMillis(500)).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
         planted.put(wrapped("await().atMost(", "    300, TimeUnit.MILLISECONDS).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
         planted.put(wrapped("await().atMost(", "    3, TimeUnit.SECONDS).until(ready);"), FlakeScan.Kind.SHORT_AWAIT);
+        planted.put(wrapped("try (var files = Files", "    .walk(root)) {"), FlakeScan.Kind.REPO_WALK);
+        planted.put(wrapped("try (var files = Files" + ".", "    walk(root)) {"), FlakeScan.Kind.REPO_WALK);
+        planted.put(wrapped("Files", "    .walkFileTree(root, visitor);"), FlakeScan.Kind.REPO_WALK);
+        planted.put(wrapped("var found = Files", "    .find(root, 9, (path, attributes) -> true);"), FlakeScan.Kind.REPO_WALK);
 
         var hits = FlakeScan.scan(plant("A.java", String.join("\n", planted.keySet()))).hits();
         var expected = new ArrayList<String>();
@@ -282,7 +392,7 @@ class FlakeScanTest {
 
     @Test
     void scan_everySkippedDirectoryName_isNotDescendedInto() throws IOException {
-        for (var skipped : List.of("target", ".git", ".m2-local", "node_modules")) {
+        for (var skipped : SourceWalk.BUILD_OUTPUT) {
             write(tmp.resolve("m/" + skipped + "/x/src/test/java/Gen.java"), sleepLine());
         }
 
@@ -336,6 +446,15 @@ class FlakeScanTest {
                                     .collect(Collectors.joining(" "))
                                     .strip()
                                     .split("\\s+"));
+    }
+
+    /// Built from pieces so this file never carries the pattern it scans for.
+    private static String methodBody(String... lines) {
+        return "class A {\n    void m() throws Exception {\n" + String.join("\n", lines) + "\n    }\n}";
+    }
+
+    private static String walkLine() {
+        return "try (var files = Files" + ".walk(root)) {";
     }
 
     /// Built from pieces so this file never carries the pattern it scans for.

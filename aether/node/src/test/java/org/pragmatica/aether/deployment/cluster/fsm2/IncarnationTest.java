@@ -135,8 +135,9 @@ class IncarnationTest {
         assertThat(Rows.occupies(w.h.model(), MbWorld.pair(W1, ORDERS))).isTrue();
         assertThat(w.h.submitsBesides(SubmitKind.WARNINGS).stream().filter(s -> s.kind() != SubmitKind.COMMUNITY)).as("nothing is written for the rows")
                   .isEmpty();
-        assertThat(w.h.warningPuts()).as("the unjudgeable worker class is the only open warning persisted (one write carries the open row, #3274)")
-                  .containsExactly(new FsmWarningKey("worker-absence-unjudgeable", "worker"));
+        assertThat(w.h.warningPuts()).as("the unjudgeable worker class and the empty placement audience of the target (#3815) are the only open warnings persisted (one write carries the open rows, #3274)")
+                  .containsExactlyInAnyOrder(new FsmWarningKey("worker-absence-unjudgeable", "worker"),
+                                             new FsmWarningKey("placement-audience-empty", ORDERS.base().asString()));
     }
 
     // NT-123 (d)

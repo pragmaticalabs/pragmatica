@@ -643,17 +643,7 @@ class EmberNodeReplacementTest {
     /// The newest committed record for `original` any node knows: nodes apply the leader's commits at slightly different
     /// moments, and a node that is dying or dead still holds its last, older view, so the highest epoch wins.
     private NodeReplacementValue recordOf(NodeId original) {
-        NodeReplacementValue newest = null;
-
-        for (var node : new ArrayList<>(live())) {
-            var found = node.nodeReplacementService().status(original).or((NodeReplacementValue) null);
-
-            if (found != null && (newest == null || found.epoch() > newest.epoch())) {
-                newest = found;
-            }
-        }
-
-        return newest;
+        return ReplacementSignal.newestRecordOnAnyNode(live(), original).or((NodeReplacementValue) null);
     }
 
     private void awaitTerminal(NodeId original) {

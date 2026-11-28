@@ -413,49 +413,74 @@ class ReadCommittedStreamTest {
     class StaleCopy {
 
         @Test
-        void behindCommittedOwner_withoutAnAnnouncementOrBelowIt_isTrue_andCaughtUpIsFalse() {
+        void replicaStaleness_withoutAnAnnouncementOrBelowIt_isBehind_andCaughtUpIsCurrent() {
             manager = replicaWithRecords(2);
 
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("(a) nothing announced by the owner in this life").isTrue();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("(a) nothing announced by the owner in this life").isEqualTo(ReplicaStaleness.BEHIND);
 
             manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
 
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("announced 1, visible 1: caught up").isFalse();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("announced 1, visible 1: caught up").isEqualTo(ReplicaStaleness.CURRENT);
 
             manager.commitAdvanced(STREAM, PARTITION, 3L, EPOCH_1);
 
             assertThat(visibleOffset(manager)).as("control: the copy holds only offsets 0 and 1").isEqualTo(1L);
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("(b) visible 1 below the announced 3").isTrue();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("(b) visible 1 below the announced 3").isEqualTo(ReplicaStaleness.BEHIND);
         }
 
         @Test
-        void behindCommittedOwner_aMarkABatchOfANewerEpochOpened_isNotAnAnnouncement() {
+        /// #3325: a batch of epoch 2 carries the mark epoch 1 announced into epoch 2 with the epoch that announced it, so the
+        /// mark stays the ended life's (VOID, never `BEHIND`'s degrade to the copy) until epoch 2's owner announces.
+        void replicaStaleness_aBatchOfANewerEpoch_keepsTheCarriedMarkVoid_untilItsOwnerAnnounces() {
             manager = replicaWithRecords(2);
             manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
             manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_2).onFailure(cause -> fail(cause.message()));
 
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the owner of epoch 2 has announced nothing").isTrue();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("epoch 1's mark, carried into epoch 2, is void").isEqualTo(ReplicaStaleness.VOID_OWNER_MARK);
 
             manager.commitAdvanced(STREAM, PARTITION, 2L, EPOCH_2);
 
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("announced under epoch 2, visible 2").isFalse();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("announced under epoch 2, visible 2").isEqualTo(ReplicaStaleness.CURRENT);
+        }
+
+        /// #3325 (ruling Q4): ownership moved to epoch 2, so epoch 1's mark is void; one batch from epoch 2's owner, before it
+        /// announces, keeps it void (a boolean "announced" flag the batch clears read it as never announced, `BEHIND`, and
+        /// re-opened the degrade to the copy); epoch 2's own announcement ends it.
+        @Test
+        void replicaStaleness_aBatchFromTheNewOwnerBeforeItAnnounces_keepsTheEndedLifesMarkVoid() {
+            manager = replicaWithRecords(2);
+            manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
+
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("control: epoch 1's mark, under epoch 1").isEqualTo(ReplicaStaleness.CURRENT);
+
+            manager.ownerEpochSource((_, _) -> EPOCH_2);
+
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("ownership moved on: the mark is void").isEqualTo(ReplicaStaleness.VOID_OWNER_MARK);
+
+            manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_2).onFailure(cause -> fail(cause.message()));
+
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("a batch of epoch 2 is no announcement").isEqualTo(ReplicaStaleness.VOID_OWNER_MARK);
+
+            manager.commitAdvanced(STREAM, PARTITION, 2L, EPOCH_2);
+
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("control: epoch 2's owner announced").isEqualTo(ReplicaStaleness.CURRENT);
         }
 
         @Test
-        void behindCommittedOwner_aBatchBeforeAnyAnnouncement_isNotAnAnnouncement() {
+        void replicaStaleness_aBatchBeforeAnyAnnouncement_isBehind() {
             manager = replicaWithRecords(2);
             manager.appendRecovered(STREAM, PARTITION, 2L, "r2".getBytes(UTF_8), 3L, EPOCH_1).onFailure(cause -> fail(cause.message()));
 
             assertThat(visibleOffset(manager)).as("control: nothing announced, so nothing is visible on the copy").isEqualTo(-1L);
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("a batch is not an announcement: (a) still holds").isTrue();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("a batch is not an announcement: (a) still holds").isEqualTo(ReplicaStaleness.BEHIND);
         }
 
         @Test
-        void behindCommittedOwner_onTheOwner_isFalse() {
+        void replicaStaleness_onTheOwner_isCurrent() {
             manager = streamPartitionManager(Long.MAX_VALUE);
             createStream(manager, 3, 2);
 
-            assertThat(manager.behindCommittedOwner(STREAM, PARTITION)).as("the owner is the authority").isFalse();
+            assertThat(manager.replicaStaleness(STREAM, PARTITION)).as("the owner is the authority").isEqualTo(ReplicaStaleness.CURRENT);
         }
 
         @Test

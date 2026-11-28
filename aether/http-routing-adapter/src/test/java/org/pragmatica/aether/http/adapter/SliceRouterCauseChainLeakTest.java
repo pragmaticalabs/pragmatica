@@ -18,6 +18,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.testlogging.LogCapture;
@@ -66,9 +67,13 @@ class SliceRouterCauseChainLeakTest {
 
         return (JsonMapper) Proxy.newProxyInstance(JsonMapper.class.getClassLoader(),
                                                    new Class[]{JsonMapper.class},
-                                                   (_, method, args) -> {
+                                                   (self, method, args) -> {
                                                        if (method.getName().equals("writeAsBytes")) {
                                                            return Result.failure(Causes.cause("serializer down"));
+                                                       }
+                                                       // The HTTP codec derives its mapper with clientFacing(); the derived mapper must still be this failing one.
+                                                       if (method.getName().equals("clientFacing")) {
+                                                           return self;
                                                        }
                                                        return method.invoke(real, args);
                                                    });
@@ -144,5 +149,41 @@ class SliceRouterCauseChainLeakTest {
         respond(JsonMapper.defaultJsonMapper(), nestedChain());
 
         assertThat(serverLog()).contains("(cause chain: Bad Gateway <- Conflict <- S1-top <- S2-mid <- S3-plain-deep)");
+    }
+
+    private static final String THROWN = "SENTINEL-3723-route-throwable";
+
+    /// #3723: a route that fails with a caught throwable answers 500 with the fixed text; the trace is in the server log.
+    @Test
+    void throwableFailure_clientBodyIsFixedText_andServerLogCarriesTheTrace() {
+        var response = respond(JsonMapper.defaultJsonMapper(), Causes.fromThrowable(new IllegalStateException(THROWN)));
+
+        assertThat(response.statusCode()).isEqualTo(500);
+        assertThat(body(response)).contains("Internal error")
+                                  .doesNotContain(THROWN)
+                                  .doesNotContain("IllegalStateException")
+                                  .doesNotContain("at java")
+                                  .doesNotContain("\\tat ")
+                                  .doesNotContain("\tat ");
+        assertThat(serverLog()).contains(THROWN).contains("\tat ").contains("req_2101");
+    }
+
+    /// #3723: the serializer's cause of a SUCCESS response is the only record of why it was not written; it is logged WARN
+    /// with the requestId and the chain, and the client body says only "Serialization failed".
+    @Test
+    void successSerializationFailure_isLoggedWithRequestId_andClientBodyStaysGeneric() {
+        Route<String> route = Route.route(HttpMethod.GET,
+                                          "/ok",
+                                          ctx -> Promise.success("fine"),
+                                          CommonContentType.APPLICATION_JSON,
+                                          List.of(),
+                                          "ok");
+        RouteSource source = () -> Stream.of(route);
+        var request = HttpRequestContext.httpRequestContext("/ok", "GET", Map.of(), Map.of(), "req_3723");
+        var response = SliceRouter.sliceRouter(source, GENERATED_STYLE_MAPPER, failingSerializer()).handle(request).await().unwrap();
+
+        assertThat(response.statusCode()).isEqualTo(500);
+        assertThat(body(response)).contains("Serialization failed").doesNotContain("serializer down");
+        assertThat(serverLog()).contains("req_3723").contains("serializer down").contains("response serialization failed");
     }
 }

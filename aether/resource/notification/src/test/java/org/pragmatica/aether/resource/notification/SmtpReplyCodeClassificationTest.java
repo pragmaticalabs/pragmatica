@@ -21,6 +21,7 @@ import org.pragmatica.net.smtp.SmtpConfig;
 import org.pragmatica.net.smtp.SmtpTlsMode;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -100,7 +101,7 @@ class SmtpReplyCodeClassificationTest {
     void scriptedServer_clientResetsMidScript_nextClientIsStillServed() throws IOException {
         var connections = new AtomicInteger();
 
-        try (var server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+        try (var server = HeldPort.tcp(50, InetAddress.getLoopbackAddress())) {
             Thread.ofPlatform().daemon().start(() -> serve(server, connections, "454 4.7.0 later", Stage.AUTH));
 
             try (var abandoned = new Socket(InetAddress.getLoopbackAddress(), server.getLocalPort())) {
@@ -135,7 +136,7 @@ class SmtpReplyCodeClassificationTest {
     private static int attemptsAgainstScriptedServer(String failReply, Stage failAt) throws IOException {
         var connections = new AtomicInteger();
 
-        try (var server = new ServerSocket(0, 50, InetAddress.getLoopbackAddress())) {
+        try (var server = HeldPort.tcp(50, InetAddress.getLoopbackAddress())) {
             Thread.ofPlatform().daemon().start(() -> serve(server, connections, failReply, failAt));
             var tlsMode = failAt == Stage.STARTTLS
                           ? SmtpTlsMode.STARTTLS

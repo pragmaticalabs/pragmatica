@@ -517,6 +517,17 @@ public enum OperatorWarningCode {
                                         "stream-consumer",
                                         WarningLevel.INFO,
                                         STREAM_CONSUMER_DETACH_WAIT_EXCEEDED),
+    /// A stream consumer cannot read its cursor (#3283): the cursor fetch failed, so the consumer has not started and retries
+    /// the fetch with backoff. It never starts at the group's reset point instead; on a worker the committed cursor is read
+    /// from a core node, and no answer from a core is not the answer "no cursor". Raised once per run of failed fetches;
+    /// subject `stream[partition]/group`. The message names the cause.
+    STREAM_CONSUMER_CURSOR_UNREADABLE("stream-consumer-cursor-unreadable", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_CURSOR_UNREADABLE], same subject: a later fetch read the cursor and the consumer
+    /// started from it, or the consumer was cancelled while its fetch was failing (the message says which).
+    STREAM_CONSUMER_CURSOR_READABLE("stream-consumer-cursor-readable",
+                                    "stream-consumer",
+                                    WarningLevel.INFO,
+                                    STREAM_CONSUMER_CURSOR_UNREADABLE),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -660,10 +671,28 @@ public enum OperatorWarningCode {
     /// says which). INFO, published only after a published lagging event for the node (#752 mechanism); an observer that never lagged
     /// publishes nothing.
     OBSERVER_CONSENSUS_RESUMED("observer-consensus-resumed", "consensus", WarningLevel.INFO, OBSERVER_CONSENSUS_LAGGING),
-    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed
-    /// (#1654): the view agreement counts each member's last two reports with no freshness, so a member that reported the view and
-    /// then died is still agreed. Formation is not blocked; auto-heal is expected to replace the seat. Raised once per seat by the node
-    /// that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE].
+    /// A core voter stayed in one SYNCING episode for the stuck bound (5 minutes) while the leader led without interruption, its own
+    /// consensus was active and the voter's reports kept arriving (#2136). From now on the leader counts it as failed evidence for the
+    /// core voter reconciler: at most one such voter, only while no voter of the roster has other failure evidence, and it is replaced
+    /// only by an admitted READY candidate, one seat per settled roster change; with no candidate nothing is removed. Raised once per
+    /// episode by the leader; subject is the voter; the message names it and the elapsed time. Closed by [#CORE_VOTER_SYNCING_ENDED].
+    /// Recovery action: none needed when a candidate exists (the seat is healed); otherwise restart or replace the voter, or add capacity.
+    CORE_VOTER_SYNCING_STUCK("core-voter-syncing-stuck", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CORE_VOTER_SYNCING_STUCK], same subject (#2136): the voter's SYNCING episode ended (a READY, missing or stale
+    /// report, the raising node lost leadership (#3743: raised by that node on the loss itself) or its own consensus went inactive,
+    /// the voter left the roster, for example by being healed, or the raising node did not evaluate for more than 5 seconds, for example
+    /// during a reconfiguration: then the voter may still be stuck and a new episode starts from zero). Exactly one per stuck warning,
+    /// from the node that raised it. INFO, published only after a published stuck warning for the voter (#752 mechanism).
+    CORE_VOTER_SYNCING_ENDED("core-voter-syncing-ended", "consensus", WarningLevel.INFO, CORE_VOTER_SYNCING_STUCK),
+    /// Genesis formed with a seat of the agreed roster that was not a connected, authenticated peer when the roster was installed and
+    /// was still not connected when the installing node checked once, 5 seconds after the install (#1654, #3774, #3785): the view
+    /// agreement counts each member's last two reports with no freshness, so a member that reported the view and then died is still
+    /// agreed. A seat that is connected at that check (it can be mid-handshake at the install) is never named, and the check is the one
+    /// read: a seat that connected and dropped again before it is judged by it alone. The check needs no activation, so the node names its
+    /// dead seat whatever state it is in after the install. Formation is not blocked; auto-heal is expected to replace the seat. Raised
+    /// at most once per seat by the node that installed the roster; the subject is the seat's node id. Closed by [#GENESIS_SEAT_REACHABLE],
+    /// which the node publishes when a consensus tick sees the seat connected or out of the roster; an engine that never activates runs
+    /// no such tick, so there the warning is not closed.
     GENESIS_SEAT_UNREACHABLE("genesis-seat-unreachable", "consensus", WarningLevel.WARNING),
     /// The recovery of [#GENESIS_SEAT_UNREACHABLE], same subject (#1654): the seat is a connected peer again, or it left the voter
     /// roster (replaced); the message says which. INFO, published only after a published unreachable event for the seat (#752 mechanism).
@@ -1239,6 +1268,19 @@ public enum OperatorWarningCode {
     /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
     APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
+    /// A committed target whose placement audience is empty is not placed (#3815): under WORKERS_ONLY, no worker sits in an ACTIVE community,
+    /// which on a small cluster means the community has fewer live members than `[community_policy] viability_floor` (default 3, the DHT
+    /// replication factor); the other policies when no core is ready. Once per episode. Subject is the target (the artifact without its
+    /// version). The message names the policy, each community with its state and live members, and the floor. Closed by
+    /// [#PLACEMENT_AUDIENCE_AVAILABLE]. Operator action: add workers, or lower `viability_floor` with `allow_below_rf = true`.
+    PLACEMENT_AUDIENCE_EMPTY("placement-audience-empty", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#PLACEMENT_AUDIENCE_EMPTY], same subject: the audience is no longer empty, the placement no longer parses, or the
+    /// target was removed. Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
+    PLACEMENT_AUDIENCE_AVAILABLE("placement-audience-available",
+                                 "deployment",
+                                 WarningLevel.INFO,
+                                 PLACEMENT_AUDIENCE_EMPTY,
+                                 true),
     /// A live worker saw its own activation directive removed with no replacement, and halts (#3193): the core retired it as
     /// departed while the process still runs. Subject: the worker's node id. There is no recovery code: the halt ends the
     /// process, and the node returns only through a fresh `WorkerJoin`.
@@ -1268,6 +1310,17 @@ public enum OperatorWarningCode {
     /// (#3174, H3b): the removal's cluster write may still land late and delete the fresh routes. Raised once per unsettled removal, on the
     /// transition, however many publishes wait on it. Subject is the node and the artifact. Closed by [#ROUTE_UNPUBLISH_AWAIT_SETTLED].
     ROUTE_UNPUBLISH_AWAIT_EXPIRED("route-unpublish-await-expired", "deployment", WarningLevel.WARNING),
+    /// A node waits to start consensus because fewer core peers than a quorum have completed their handshake with it (#3525): the join
+    /// guard casts no ballot until a quorum has handshaken and agrees on every label the cluster requires to agree, and it waits
+    /// without a deadline, because without a quorum there is no election to delay. Raised once per wait episode, when the join wait
+    /// bound has passed with the quorum still incomplete. Subject is the waiting node; the message names the core peers not yet
+    /// handshaken. A peer whose label differs is not waited for: the node refuses to start and says so. Closed by
+    /// [#CONSENSUS_QUORUM_COMPLETE].
+    CONSENSUS_QUORUM_INCOMPLETE("consensus-quorum-incomplete", "consensus", WarningLevel.WARNING),
+    /// The recovery of [#CONSENSUS_QUORUM_INCOMPLETE], same subject (#3525): the wait that raised the warning ended because a quorum of
+    /// the core has now handshaken and agrees on every label the cluster requires to agree, so the node goes on to sync. Raised only
+    /// after the warning was, once per wait episode.
+    CONSENSUS_QUORUM_COMPLETE("consensus-quorum-complete", "consensus", WarningLevel.INFO, CONSENSUS_QUORUM_INCOMPLETE),
     /// The recovery of [#ROUTE_UNPUBLISH_AWAIT_EXPIRED], same subject: the removal that outlived the bound has settled (success or failure).
     /// Published by the node that raised the warning, only after its published warning.
     ROUTE_UNPUBLISH_AWAIT_SETTLED("route-unpublish-await-settled",

@@ -37,16 +37,21 @@ import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.testlogging.LogCapture;
 
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -196,7 +201,7 @@ class ClusterTopologyManagerActuatorTest {
                                                              clusterStore::apply,
                                                              () -> ClusterPhase.NORMAL,
                                                              clock,
-                                                             drainSink,
+                                                             DrainSink.synchronous(drainSink, _ -> {}),
                                                              drainCommandClearCalls::add,
                                                              clusterStore::autoHealState,
                                                              liveness);
@@ -398,6 +403,77 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
         assertThat(drainCommandSinkCalls).isEmpty();
         assertThat(lifecycleManager.terminateCount.get()).isZero();
+    }
+
+    /// #3439: the surplus selector asks [ClusterTopologyManager#drainRefusal] and [ClusterTopologyManager#drainNode] enforces it: one predicate,
+    /// so what is asked is what is refused. Each case asks the predicate and then drains the same node and reason, once.
+    private void assertOneAnswer(NodeId node, DrainReason reason, boolean refused) {
+        var asked = ctm.drainRefusal(node, reason);
+        var drained = ctm.drainNode(node, reason).await();
+
+        assertThat(asked.isPresent()).as("the predicate for %s / %s", node, reason).isEqualTo(refused);
+        assertThat(drained.isFailure()).as("the choke point for %s / %s", node, reason).isEqualTo(refused);
+        asked.onPresent(cause -> assertThat(drained.fold(Cause::message, _ -> "")).as("the same refusal").isEqualTo(cause.message()));
+        asked.onPresent(cause -> assertThat(ClusterTopologyManager.isDrainRefusal(cause)).as("the reconciler recognises it as a refusal").isTrue());
+    }
+
+    /// #3439: the typed refusal of the leader's own id is recognised too; the choke point answers the voter-handoff refusal first for a leader
+    /// that is still a voter, so only a direct question reaches it.
+    @Test
+    void isDrainRefusal_recognisesTheLeaderSelfRefusal() {
+        assertThat(ClusterTopologyManager.isDrainRefusal(new ClusterTopologyManager.LeaderCannotDrainItself(SELF))).isTrue();
+    }
+
+    /// #3439: a manager that leaves [ClusterTopologyManager#drainRefusal] on its default drains whatever it is asked, so it refuses nothing.
+    @Test
+    void drainRefusal_onTheInterfaceDefault_refusesNothing() {
+        var manager = (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
+                                                                      new Class<?>[]{ClusterTopologyManager.class},
+                                                                      ClusterTopologyManagerActuatorTest::callTheDefault);
+
+        assertThat(manager.drainRefusal(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).isPresent()).isFalse();
+    }
+
+    private static Object callTheDefault(Object proxy, Method method, Object[] args) throws Throwable {
+        return InvocationHandler.invokeDefault(proxy, method, args);
+    }
+
+    /// #3439: a drain that fails for another reason (a consensus put, a join outcome) is not one of the choke point's refusals.
+    @Test
+    void isDrainRefusal_isNotAnyOtherDrainFailure() {
+        assertThat(ClusterTopologyManager.isDrainRefusal(Causes.cause("consensus put timed out"))).isFalse();
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_voterHandoffMissing() {
+        ctm.setRetirementRefusal(node -> node.equals(PEER_D) ? Option.some("awaiting certified voter handoff") : Option.none());
+        ctm.activate();
+
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_C, DrainReason.OVERPROVISION_PARTITION_HEAL, false);
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_pairedReplacementRefusedForSurplusTrimOnly() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_C, DrainReason.OVERPROVISION_SCALE_DOWN, true);
+        assertOneAnswer(PEER_D, DrainReason.JOIN_GRACE_REAP, false);
+    }
+
+    @Test
+    void drainRefusal_isTheChokePointsOwnAnswer_inactiveManagerAndSelf() {
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+
+        ctm.activate();
+
+        assertOneAnswer(SELF, DrainReason.OVERPROVISION_PARTITION_HEAL, true);
+        assertOneAnswer(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL, false);
     }
 
     /// #1543: the LeaderReconciler surplus drain picks a fresh ephemeral core first — the +1 replacement. While

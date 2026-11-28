@@ -16,22 +16,18 @@
 package org.pragmatica.http.server;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
+import java.net.BindException;
 import java.net.ConnectException;
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
-import java.net.PortUnreachableException;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.net.SocketTimeoutException;
 import java.util.Collections;
 import java.util.Set;
 import java.util.function.BiConsumer;
-import java.util.stream.IntStream;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
@@ -57,10 +53,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// #2180: the optional bind host of [HttpServerConfig] narrows the listening socket of both servers to one local
 /// address; none keeps the wildcard (every interface), as before.
 ///
-/// The refusal is observed on the wire, against a second local address of the machine: a TCP connect to it is
-/// refused (HTTP/1.1), and a datagram sent to it from a connected socket is answered with ICMP port-unreachable,
-/// which `java.net` reports as [PortUnreachableException] on the next receive (HTTP/3). Both are paired with a control
-/// on the wildcard-bound default, so a test that cannot tell "refused" from "unreachable for another reason" fails.
+/// The HTTP/1.1 refusal is observed on the wire, against a second local address of the machine: a TCP connect to it
+/// is refused. The HTTP/3 refusal is not: whether anything holds a UDP address is decided by trying to bind that
+/// address ourselves (#3778), a signal only a holder of the address can change. The ICMP port-unreachable that a
+/// datagram probe waits for can be dropped by the kernel's rate limit, and a datagram delivered to a UDP socket of
+/// another process reads exactly like one delivered to ours. Both are paired with a control on the wildcard-bound
+/// default, so a test that cannot tell "refused" from "unreachable for another reason" fails.
 /// Ports come from the OS (port 0), so the tests do not collide with other modules running concurrently (#939).
 class HttpServerBindHostTest {
     private static final BiConsumer<HttpRequest, ResponseWriter> ANSWER_OK = (_, writer) -> writer.ok("{}");
@@ -68,8 +66,6 @@ class HttpServerBindHostTest {
     /// TEST-NET-1 (RFC 5737): resolves as a literal, so it passes the resolution, but no interface of this machine owns it.
     private static final String NOT_OURS = "192.0.2.1";
     private static final int CONNECT_TIMEOUT_MS = 5_000;
-    private static final int DATAGRAM_ATTEMPTS = 5;
-    private static final int DATAGRAM_TIMEOUT_MS = 400;
 
     private HttpServer h1;
     private Http3Server h3;
@@ -215,7 +211,7 @@ class HttpServerBindHostTest {
             assertThat(outcome.isFailure()).as("the start fails").isTrue();
             outcome.onFailure(cause -> assertBindFailedNaming(cause, NOT_OURS, port));
             assertThat(Set.<EventLoopGroup> of(boss, worker)).allMatch(EventLoopGroup::isTerminated);
-            assertThat(connects(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isFalse();
+            assertThat(heldOnTcp(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isFalse();
         }
 
         /// A blank host would resolve to loopback (`InetAddress.getByName("")`); it is refused instead, so a stray empty setting never reads as
@@ -235,8 +231,7 @@ class HttpServerBindHostTest {
     class OverHttp3 {
         private Http3Server start(HttpServerConfig config) {
             h3 = Http3Server.create(config,
-                                    QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
-                                                         .unwrap(),
+                                    quicSsl(),
                                     ANSWER_OK)
                             .await(timeSpan(10).seconds())
                             .unwrap();
@@ -244,8 +239,8 @@ class HttpServerBindHostTest {
             return h3;
         }
 
-        /// RED at base: a datagram to the non-loopback address of a loopback-bound listener is answered with ICMP
-        /// port-unreachable, while the listener serves a real request on loopback.
+        /// RED at base: the non-loopback address of a loopback-bound listener is free to bind (nothing holds it),
+        /// while the listener serves a real request on loopback.
         @Test
         void loopbackBound_serves127_refusesTheNonLoopbackAddress() throws Exception {
             assumeThat(hasNonLoopbackAddress()).as("this machine has a non-loopback IPv4 address").isTrue();
@@ -257,12 +252,12 @@ class HttpServerBindHostTest {
             assertThat(Http3TestClient.exchange(server.port(), stream -> smallBody(stream, server.port())).status())
                 .as("the loopback listener serves a request")
                 .isEqualTo("200");
-            assertThat(datagramRefused(nonLoopbackAddress(), server.port())).as("the non-loopback address is refused")
-                                                                          .isTrue();
+            assertThat(heldOnUdp(nonLoopbackAddress(), server.port())).as("the loopback listener does not hold the non-loopback address")
+                                                                    .isFalse();
         }
 
-        /// The control for the test above and the "default unchanged" guarantee: a wildcard-bound listener receives
-        /// the datagram on the same address, so no ICMP refusal comes back.
+        /// The control for the test above and the "default unchanged" guarantee: a wildcard-bound listener holds the
+        /// same address, so binding it fails.
         @Test
         void noBindHost_listensOnEveryInterface() throws Exception {
             assumeThat(hasNonLoopbackAddress()).as("this machine has a non-loopback IPv4 address").isTrue();
@@ -271,8 +266,8 @@ class HttpServerBindHostTest {
 
             assertThat(boundAddress(channelOf(server.serverChannel())).isAnyLocalAddress()).as("wildcard address")
                                                                                           .isTrue();
-            assertThat(datagramRefused(nonLoopbackAddress(), server.port())).as("the non-loopback address is not refused")
-                                                                          .isFalse();
+            assertThat(heldOnUdp(nonLoopbackAddress(), server.port())).as("the wildcard listener holds the non-loopback address")
+                                                                    .isTrue();
         }
 
         /// RED at base: the unresolvable host fails the start typed and the owned group is terminated by then.
@@ -294,10 +289,10 @@ class HttpServerBindHostTest {
         }
 
         /// The HTTP/3 counterpart of the HTTP/1.1 test of the same name: BindFailed naming the host, group terminated,
-        /// no listener (a datagram to the port on loopback is refused).
+        /// no listener (the port on loopback can be bound, which a surviving listener would prevent).
         @Test
         void notOurAddress_failsTheBind_namingTheHost_andNothingListens() throws IOException {
-            var port = freeTcpPort();
+            var port = freeUdpPort();
             var group = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
             var outcome = Http3Server.bind(HttpServerConfig.httpServerConfig("bind-h3-not-ours", port)
                                                            .withBindHost(NOT_OURS),
@@ -311,11 +306,12 @@ class HttpServerBindHostTest {
             assertThat(outcome.isFailure()).as("the start fails").isTrue();
             outcome.onFailure(cause -> assertBindFailedNaming(cause, NOT_OURS, port));
             assertThat(group.isTerminated()).as("the owned group is terminated when the failure is reported").isTrue();
-            assertThat(datagramRefused(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isTrue();
+            assertThat(heldOnUdp(InetAddress.getLoopbackAddress(), port)).as("nothing is listening").isFalse();
         }
 
-        private static QuicSslContext quicSsl() {
+        private static LiveTls<QuicSslContext> quicSsl() {
             return QuicSslContextFactory.createSelfSignedServer(Http3.supportedApplicationProtocols())
+                                        .flatMap(LiveTls::liveQuicTls)
                                         .unwrap();
         }
 
@@ -324,32 +320,31 @@ class HttpServerBindHostTest {
             Http3TestClient.finishWith(stream, new DefaultHttp3DataFrame(Unpooled.wrappedBuffer(new byte[16])));
         }
 
-        /// Whether a datagram sent from a connected socket to `address:port` is refused with ICMP port-unreachable.
-        /// One ICMP reply may be lost, so up to [#DATAGRAM_ATTEMPTS] datagrams are sent and the first refusal ends the
-        /// probe; silence after all of them means something received them (or nothing answered either way).
-        private static boolean datagramRefused(InetAddress address, int port) throws IOException {
-            try (var socket = new DatagramSocket()) {
-                socket.connect(address, port);
-                socket.setSoTimeout(DATAGRAM_TIMEOUT_MS);
-
-                return IntStream.range(0, DATAGRAM_ATTEMPTS)
-                                .anyMatch(_ -> refusedOnce(socket));
+        /// Whether something holds `address:port` for UDP: the kernel refuses a second bind to it. Decided by the
+        /// bind itself, so neither ICMP rate limiting nor a datagram that another process receives can change it.
+        private static boolean heldOnUdp(InetAddress address, int port) throws IOException {
+            try (var _ = new DatagramSocket(new InetSocketAddress(address, port))) {
+                return false;
+            } catch (BindException _) {
+                return true;
             }
         }
 
-        private static boolean refusedOnce(DatagramSocket socket) {
-            try {
-                socket.send(new DatagramPacket(new byte[]{1}, 1));
-                socket.receive(new DatagramPacket(new byte[16], 16));
-
-                return false;
-            } catch (PortUnreachableException _) {
-                return true;
-            } catch (SocketTimeoutException _) {
-                return false;
-            } catch (IOException e) {
-                throw new UncheckedIOException(e);
+        /// A UDP port that was free a moment ago (the TCP probe below says nothing about UDP).
+        private static int freeUdpPort() throws IOException {
+            try (var probe = new DatagramSocket(0, InetAddress.getLoopbackAddress())) {
+                return probe.getLocalPort();
             }
+        }
+    }
+
+    /// Whether something holds `address:port` for TCP: the kernel refuses a second listener on it. Decided by the
+    /// bind, not by the answer a connect gets back (#3778).
+    private static boolean heldOnTcp(InetAddress address, int port) throws IOException {
+        try (var _ = new ServerSocket(port, 1, address)) {
+            return false;
+        } catch (BindException _) {
+            return true;
         }
     }
 

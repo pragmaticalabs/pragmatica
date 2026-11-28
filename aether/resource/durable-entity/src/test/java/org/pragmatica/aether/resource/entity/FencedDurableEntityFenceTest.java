@@ -23,7 +23,7 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -49,32 +49,19 @@ class FencedDurableEntityFenceTest {
     /// strictly-older epoch (while the high-water has advanced) models a deposed owner that still
     /// believes it owns the arc.
     private static final class MutableOwnerEpoch implements OwnerEpochSource {
-        private final AtomicLong term;
-        private final AtomicLong counter;
+        private final AtomicReference<OwnerEpoch> epoch;
 
         private MutableOwnerEpoch(long term, long counter) {
-            this.term = new AtomicLong(term);
-            this.counter = new AtomicLong(counter);
+            this.epoch = new AtomicReference<>(OwnerEpoch.ownerEpoch(0L, term, counter));
         }
 
         private void set(long newTerm, long newCounter) {
-            term.set(newTerm);
-            counter.set(newCounter);
+            epoch.set(OwnerEpoch.ownerEpoch(0L, newTerm, newCounter));
         }
 
         @Override
-        public long currentEpochIncarnation() {
-            return 0L;
-        }
-
-        @Override
-        public long currentEpochTerm() {
-            return term.get();
-        }
-
-        @Override
-        public long currentEpochCounter() {
-            return counter.get();
+        public OwnerEpoch currentEpoch() {
+            return epoch.get();
         }
     }
 

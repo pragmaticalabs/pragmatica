@@ -89,6 +89,11 @@ public sealed interface StreamResourceValidator {
     /// #3333: a `[retention]` block that declares no bound, and one that declares `max_count` without `max_bytes`.
     String RULE_RETENTION_UNDECLARED = "retention-undeclared";
     String RULE_RETENTION_COUNT_ONLY = "retention-count-only";
+    /// #3333 (stream-storage-design 2.2): the hot window and replay-window share floors against the seal and ring constants.
+    String RULE_HOT_WINDOW_BELOW_SEAL_RUNS = "hot-window-below-seal-runs";
+    String RULE_HOT_WINDOW_BELOW_MAX_EVENT = "hot-window-below-max-event";
+    String RULE_RETENTION_SHARE_TOO_SMALL = "retention-share-too-small";
+    String RULE_RETENTION_COUNT_UNINDEXABLE = "retention-count-unindexable";
     /// #3333: a key whose release has not merged yet (T-146).
     String RULE_NOT_YET_AVAILABLE = "not-yet-available";
     /// #3333 (stream-storage-design 2.2, T-163): the `until_consumed` shape refusals, a `group_idle_expiry` under `window`,
@@ -201,7 +206,7 @@ public sealed interface StreamResourceValidator {
     ///
     /// Every other rule is per-section — the parser's, one id per cause type ([#ruleFor]):
     /// [#RULE_VERSION_AND_SOURCE_EXCLUSIVE], [#RULE_PRODUCER_VERSION_EXACT], [#RULE_PARTITIONS_OVER_CEILING],
-    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_RETENTION_UNDECLARED], [#RULE_RETENTION_COUNT_ONLY], [#RULE_NOT_YET_AVAILABLE], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
+    /// [#RULE_REPLICATION_POLICY_INVALID], [#RULE_REPLICATION_EXCEEDS_CORE_COUNT], [#RULE_UNKNOWN_STREAM_KEY], [#RULE_STREAM_KEY_INVALID], [#RULE_RETENTION_UNDECLARED], [#RULE_RETENTION_COUNT_ONLY], [#RULE_HOT_WINDOW_BELOW_SEAL_RUNS], [#RULE_HOT_WINDOW_BELOW_MAX_EVENT], [#RULE_RETENTION_SHARE_TOO_SMALL], [#RULE_RETENTION_COUNT_UNINDEXABLE], [#RULE_NOT_YET_AVAILABLE], [#RULE_SOURCE_ADDRESS_INVALID], [#RULE_NAMESPACE_INVALID],
     /// [#RULE_STREAM_NAME_INVALID], [#RULE_VERSION_FORMAT_INVALID], [#RULE_STREAM_RESOURCE_INVALID] for a cause
     /// type not named here. Each names the alias it sits under, taken from the section the parser
     /// refused, never from message text. [#RULE_NAMESPACE_RESERVED] on an External source has no producer at
@@ -583,6 +588,10 @@ public sealed interface StreamResourceValidator {
             case StreamDeclarationError.ValueOutOfRange _ -> RULE_STREAM_KEY_INVALID;
             case StreamDeclarationError.RetentionUndeclared _ -> RULE_RETENTION_UNDECLARED;
             case StreamDeclarationError.RetentionCountOnly _ -> RULE_RETENTION_COUNT_ONLY;
+            case StreamDeclarationError.HotWindowBelowSealRuns _ -> RULE_HOT_WINDOW_BELOW_SEAL_RUNS;
+            case StreamDeclarationError.HotWindowBelowMaxEvent _ -> RULE_HOT_WINDOW_BELOW_MAX_EVENT;
+            case StreamDeclarationError.RetentionShareTooSmall _ -> RULE_RETENTION_SHARE_TOO_SMALL;
+            case StreamDeclarationError.RetentionCountUnindexable _ -> RULE_RETENTION_COUNT_UNINDEXABLE;
             case StreamDeclarationError.NotYetAvailable _ -> RULE_NOT_YET_AVAILABLE;
             case StreamDeclarationError.UntilConsumedUncapped _ -> RULE_UNTIL_CONSUMED_UNCAPPED;
             case StreamDeclarationError.UntilConsumedModeAll _ -> RULE_UNTIL_CONSUMED_MODE_ALL;

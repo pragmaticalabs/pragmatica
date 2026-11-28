@@ -15,8 +15,6 @@ import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.node.AetherNode;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
-import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -124,7 +122,7 @@ class EmberWorkerQuorumLossTest {
         awaitLeader().nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> {
             throw new AssertionError(cause.message());
         });
-        awaitCondition("the replacement of " + victim.id() + " reaches DONE", DONE_BOUND_MS, () -> replacementDone(victim));
+        awaitCondition("the replacement of " + victim.id() + " reaches DONE on the leader, whose record the next begin checks", DONE_BOUND_MS, () -> replacementDone(victim));
         awaitCondition("the leader's electorate excludes " + victim.id(), 120_000L, () -> !installed(awaitLeader()).contains(victim));
         awaitCondition("the worker holds the leader's electorate", ROSTER_BOUND_MS, () -> installed(worker).equals(installed(awaitLeader())));
     }
@@ -157,10 +155,7 @@ class EmberWorkerQuorumLossTest {
     }
 
     private boolean replacementDone(NodeId victim) {
-        return cluster.allNodes()
-                      .stream()
-                      .map(node -> node.nodeReplacementService().status(victim).or((NodeReplacementValue) null))
-                      .anyMatch(record -> record != null && record.phase() == NodeReplacementPhase.DONE);
+        return ReplacementSignal.settledOnLeader(cluster.allNodes(), victim);
     }
 
     private AetherNode awaitLeader() {

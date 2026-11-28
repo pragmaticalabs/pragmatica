@@ -6,7 +6,7 @@ Deploy Aether clusters using Docker containers for development, testing, and pro
 
 - Docker 4.0+
 - Docker Compose (for multi-node clusters)
-- Java 25 (for building from source)
+- Java 25, 25.0.5.1 or newer (for building from source; see "Base Image" for the floor)
 
 ## Container Images
 
@@ -410,11 +410,25 @@ jobs:
 
 ### Base Image
 
-`aether-node` uses `eclipse-temurin:25-noble`; `aether-forge` still uses `eclipse-temurin:25-alpine`
-(the two Dockerfiles have not been aligned). Both are chosen for:
+`aether-node` is built on `eclipse-temurin:25.0.5.1_2-jdk-noble` and `aether-forge` on `eclipse-temurin:25.0.5.1_2-jdk-alpine`:
+exact Temurin tags, never the floating `25-*` ones. Both are chosen for:
 - Small image size (~200MB)
 - Latest Java 25 features
 - Security patches
+
+**JVM floor (CVE-2026-114938, "Java4Shell").** Aether requires JDK 25.0.5.1 or newer. Older builds carry an out-of-bounds write in the
+x86-64 Base64 decode intrinsic, reachable on CPUs with AVX-512 VBMI (Intel Ice Lake or newer, AMD Zen 4 or newer). Two checks enforce
+the floor. An image build fails if the JDK inside is older than the `JDK_FLOOR` build argument, and the node and Forge refuse to
+start, before any listener binds, when the JVM is older than the floor on an x86-64 host whose `/proc/cpuinfo` lists `avx512vbmi`. If you
+run your own JDK (VMs, bare hosts) and cannot upgrade yet, start the JVM with `-XX:-UseBASE64Intrinsics` (for example in `JAVA_OPTS`): the
+node then starts with a warning, because the flag makes HotSpot compile the Java decode loop instead of the intrinsic. If the CPU
+flags cannot be read the node also starts with a warning, never a refusal.
+
+Two fail-safe readings to know about. A failed read of the intrinsic flag (a VM that is not HotSpot, or has no management module)
+counts as "not disabled", so on a VBMI host the start is refused: only a confirmed `-XX:-UseBASE64Intrinsics` lowers a refusal to a
+warning. And a JDK whose version carries a pre-release or build suffix with no `+` (`-ea`, `-internal`, a vendor `-LTS`) is compared
+as below the floor, even when it is built from the fixed source; on a VBMI host such a self-built JDK is refused, so start it with
+`-XX:-UseBASE64Intrinsics`. Vendor builds that use `+` (for example `25.0.5.1+2-1-24.04.1-Ubuntu`) compare normally.
 
 ### Security
 

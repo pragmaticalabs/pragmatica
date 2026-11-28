@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.lang.Option;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -154,7 +155,7 @@ class AwsCredentialsProviderTest {
 
         @BeforeEach
         void start() throws IOException {
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server = HeldPort.httpServer();
             server.createContext("/latest/api/token", this::token);
             server.createContext("/latest/meta-data/iam/security-credentials/", this::credentials);
             server.start();

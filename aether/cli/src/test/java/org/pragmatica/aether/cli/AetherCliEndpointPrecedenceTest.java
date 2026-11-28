@@ -18,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.portbind.HeldPort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -57,7 +58,7 @@ class AetherCliEndpointPrecedenceTest {
     }
 
     private static HttpServer listener(List<String> requests) throws IOException {
-        var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var server = HeldPort.httpServer();
 
         server.createContext("/",
                              exchange -> {

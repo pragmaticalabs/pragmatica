@@ -21,6 +21,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -47,6 +48,8 @@ import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicheStall;
+import org.pragmatica.portbind.HeldPort;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -127,7 +130,7 @@ class QuicActivityKickStrandedLossTest {
     void tripwire_withoutTheKick_theStrandedLossStaysStranded_untilNettyIsFixed() {
         var reading = strand();
 
-        LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(5));
+        Pause.pause(Duration.ofSeconds(5));
 
         assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run " + reading).isEqualTo(-1);
         assertThat(received("A" + PAD)).as("netty now re-sends stranded data by itself - delete this tripwire and the activity kick")
@@ -233,7 +236,7 @@ class QuicActivityKickStrandedLossTest {
         awaitTrue(() -> dialerSide.stream(LANE).isPresent() && acceptorSide.get().stream(LANE).isPresent()
                         && dialerSide.stream(LANE).unwrap().streamId() == acceptorSide.get().stream(LANE).unwrap().streamId(),
                   "both ends carry FORWARD on the dialer's stream");
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(4 * ONE_WAY_DELAY_MS));   // handshake-era acks settle: nothing in flight
+        Pause.pause(Duration.ofMillis(4 * ONE_WAY_DELAY_MS));   // handshake-era acks settle: nothing in flight
     }
 
     private static void awaitTrue(BooleanSupplier condition, String what) {
@@ -271,8 +274,8 @@ class QuicActivityKickStrandedLossTest {
         DelayRelay(int targetPort, long delayMs) {
             this.delayMs = delayMs;
             try {
-                front = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
-                upstream = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+                front = HeldPort.udp(InetAddress.getLoopbackAddress());
+                upstream = HeldPort.udp(InetAddress.getLoopbackAddress());
             } catch (IOException e) {
                 throw new IllegalStateException(e);
             }

@@ -367,7 +367,7 @@ quorums capped at the ring size. Unlike a stream, the DHT applies a changed valu
   not stall every W=1 write for the whole timeout [verified: `v1882r9b_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout`].
   A refusal by the owner-epoch fence (a replica that has advanced past the writer's epoch) is evidence too, and failure
   evidence — a stale or an epoch-fence refusal — ends the operation AT ONCE with its typed failure (ReplicationChangeStale,
-  or WriteIndeterminate for an epoch fence), without waiting for a silent replica and without applying the writer's own slot
+  or WriteIndeterminate for an epoch fence, OwnershipNotApplied when this node's stamp was the floor), without waiting for a silent replica and without applying the writer's own slot
   [verified: `v1882r11_probeU_…`, `DHTDeposedWriterRollbackTest.deposedOwnerWrite_oneFencedReplicaPlusOneSilent_…`,
   `DHTDeposedWriterSameEpochTest.sameEpochTwoWriters_aDeposedReplicaNeverCountsAWriteItWouldRollBack`]. The gate is released
   once every REMOTE slot has replied, not every slot.

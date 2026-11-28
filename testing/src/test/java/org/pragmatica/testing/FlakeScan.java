@@ -18,11 +18,8 @@ package org.pragmatica.testing;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -30,8 +27,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.regex.Pattern;
+
+import org.pragmatica.testlogging.SourceWalk;
 
 /// The line scanner behind `FlakeScanTest`: finds the line patterns that past flakes were fixed by removing, in every
 /// `src/test/java` and `src/it/java` tree under a root, and checks the hits against a shrink-only allow-list.
@@ -50,23 +48,41 @@ import java.util.regex.Pattern;
 /// entry. The corollary is that the list pins counts per file, not locations: moving a listed line elsewhere in the same
 /// file is accepted. A pattern the regex does not describe (`assertThat(elapsed).as("x").isLessThan(`) is invisible to both
 /// passes; wrapping is the only blind spot this closes.
+///
+/// `REPO_WALK` is not a flake pattern in a line but a hazard in a walk (#3703): `Files.walk`, `Files.walkFileTree` and `Files.find`
+/// stat every entry before any filter runs, so a scan rooted above several modules fails with `NoSuchFileException` when a parallel
+/// build deletes a file in another module's `target/`. The scan SEES a call to one of the three in a test source (one line or
+/// wrapped, any qualification of `Files`); it CANNOT see the root the call is given, so it refuses every call that is not declared
+/// in [RepoWalkExceptions] with the reason its root cannot meet build output, and counts declarations per file like allow-list
+/// entries. It does not see a walk through another API (`File.listFiles` recursion, `Files.newDirectoryStream`, a library walker), a
+/// walk in `src/main`, or a declared root that is later changed; those are left to review. The fix it asks for is `SourceWalk`.
+///
+/// The port rules narrowed with #3801: the build-time `port-bind-gate` (a bytecode scan of every test class) owns every socket-bind and
+/// port-allocation call, whatever its argument, so `PICK_THEN_REBIND` (a port-0 construction outside the shared helper or without a
+/// `// port0-held:` marker) and the literal-port constructor form of `FIXED_PORT` are retired. `FIXED_PORT` keeps what bytecode cannot
+/// see: a port constant (`int httpPort = 8080`) and a literal handed to `bind`, `listen` or a config setter.
+///
+/// `PARK_SLEEP` is a hazard in a wait (#3386), found by [SingleParkSleep] over the whole text of every scanned file, not by a line regex: a
+/// `parkNanos` call that no loop encloses is a single-call sleep, which returns at once under a set interrupt flag. It is never an allow-list
+/// entry: a hit is fixed, with [PollUntil] (wait for the state) or [Pause] (a pause that parks to its deadline).
 final class FlakeScan {
-    static final Set<String> SKIPPED_DIRECTORIES = Set.of("target", ".git", ".m2-local", "node_modules");
     private static final List<String> SCANNED_SOURCES = List.of("/src/test/java/", "/src/it/java/");
-
     /// A pattern with a fixed flake behind it, and the fix the failure message points at.
     enum Kind {
         SLEEP("\\bThread\\s*\\.\\s*sleep\\s*\\(|\\bTimeUnit\\s*\\.\\s*[A-Z]+\\s*\\.\\s*sleep\\s*\\(",
               "wait for the condition with org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline): a bounded poll that reports first and final value, elapsed time and margin; a fixed sleep guesses how long the work takes"),
         FIXED_PORT("(?i)\\b(static\\s+final\\s+int|int|long|Integer)\\s+\\w*port\\w*\\s*=\\s*[0-9][0-9_]{3,5}\\b"
-                   + "|new\\s+(ServerSocket|DatagramSocket)\\s*\\(\\s*[0-9]{4,5}\\b"
                    + "|\\.\\s*(bind|listen|withPort|port|udpPort|tcpPort|httpPort)\\s*\\(\\s*[0-9][0-9_]{3,5}\\b",
                    "take a free or held port at bind time (the module's ClusterTestPorts/EmberTestPorts helper, or a port-0 bind) instead of a literal: a literal collides under the module-parallel build"),
         WALL_CLOCK_BOUND("(?i)\\b\\w*(elapsed|took|returnedAfter)\\w*\\s*(\\(\\))?\\s*\\)?\\s*\\.\\s*(isLessThan|isLessThanOrEqualTo|isBetween|isGreaterThan|isGreaterThanOrEqualTo|isCloseTo)\\s*\\("
                          + "|assertTrue\\s*\\(\\s*\\w*(elapsed|took)\\w*\\s*[<>]",
                          "assert the ordering structurally (a latch, a returned-before-released flag, an injected clock), not an elapsed time against a bound: a loaded host stretches any bound"),
         SHORT_AWAIT("\\batMost\\s*\\(\\s*(Duration\\s*\\.\\s*ofMillis\\s*\\(|Duration\\s*\\.\\s*ofSeconds\\s*\\(\\s*[1-4]\\s*\\)|[0-9_]+\\s*,\\s*TimeUnit\\s*\\.\\s*MILLISECONDS|[1-4]\\s*,\\s*(TimeUnit\\s*\\.\\s*)?SECONDS)",
-                    "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once");
+                    "give the wait a deadline of at least 5 s (PollUntil.pollUntil(..., Duration.ofSeconds(10)) or atMost(Duration.ofSeconds(10))): the deadline bounds only the failure, a pass returns at once"),
+        REPO_WALK("\\bFiles\\s*\\.\\s*(walk|walkFileTree|find)\\s*\\(",
+                  "scan source files with org.pragmatica.testlogging.SourceWalk.files(root): the java.nio walks (walk, walkFileTree, find) list and stat every entry before any filter runs, so a walk from a repository or multi-module root visits other modules' target/ while a parallel build rewrites it and fails with NoSuchFileException. A walk of a directory nothing else writes (a directory the test creates, the module's own fixed source path, a class directory complete before the forks start) is declared in RepoWalkExceptions with its reason (#3703)"),
+        PARK_SLEEP("(?!)",
+                   "a test that waits for a state waits for THAT state: org.pragmatica.testing.PollUntil.pollUntil(supplier, predicate, deadline); a test that means a plain pause calls org.pragmatica.testing.Pause.pause(duration), which parks to a deadline and keeps the interrupt flag. A single LockSupport.parkNanos call returns at once whenever the thread's interrupt flag is set (the call does not clear it), and early on a spurious wakeup, so the test waits for nothing and asserts state that has not happened yet (#3384, #3386). A parkNanos inside a loop that re-checks a condition or a deadline is not a hit");
 
         private final Pattern pattern;
         private final String fix;
@@ -108,25 +124,14 @@ final class FlakeScan {
         var hits = new ArrayList<Hit>();
         var examined = new ArrayList<String>();
 
-        Files.walkFileTree(root, new SimpleFileVisitor<>() {
-            @Override
-            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                return !dir.equals(root) && SKIPPED_DIRECTORIES.contains(dir.getFileName().toString())
-                       ? FileVisitResult.SKIP_SUBTREE
-                       : FileVisitResult.CONTINUE;
-            }
+        for (var file : SourceWalk.files(root)) {
+            var relative = root.relativize(file).toString().replace('\\', '/');
 
-            @Override
-            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                var relative = root.relativize(file).toString().replace('\\', '/');
-
-                if (relative.endsWith(".java") && isScanned("/" + relative)) {
-                    examined.add(relative);
-                    scanFile(relative, file, hits);
-                }
-                return FileVisitResult.CONTINUE;
+            if (relative.endsWith(".java") && isScanned("/" + relative)) {
+                examined.add(relative);
+                scanFile(relative, file, hits);
             }
-        });
+        }
         hits.sort(Comparator.comparing(Hit::file).thenComparingInt(Hit::line));
         return new Scan(hits, examined);
     }
@@ -148,13 +153,16 @@ final class FlakeScan {
                 }
             }
         }
-        for (var statement : Statements.of(lines)) {
+        var statements = Statements.of(lines);
+
+        for (var statement : statements) {
             for (var kind : Kind.values()) {
                 for (var n = kind.wrappedMatches(statement.text()); n > 0; n--) {
                     hits.add(Hit.hit(relative, statement.line(), kind, String.join(" ", statement.text().split("\\s+"))));
                 }
             }
         }
+        hits.addAll(SingleParkSleep.hits(relative, lines, String.join("\n", lines)));
     }
 
     /// A statement as the statement pass sees it: its first code line (1-based) and its text, line breaks kept.
@@ -267,21 +275,49 @@ final class FlakeScan {
     }
 
     /// Everything wrong between the hits and the allow-list; empty means green. Entries are a multiset: two identical
-    /// lines in one file need two entries. `committedCount` is the size the list was last committed at.
+    /// lines in one file need two entries. `committedCount` is the size the list was last committed at. A `REPO_WALK` hit is
+    /// never an allow-list entry: it needs SourceWalk, or a declaration in [RepoWalkExceptions].
     static List<String> problems(List<Hit> hits, List<String> entries, int committedCount) {
+        return problems(hits, entries, committedCount, Map.of());
+    }
+
+    /// As [#problems(List, List, int)], with `declaredWalks` (file to the number of walk calls declared in it) excusing `REPO_WALK`
+    /// hits: a file's hits beyond its declared count are reported, and a declared count the hits do not reach is reported stale.
+    static List<String> problems(List<Hit> hits, List<String> entries, int committedCount, Map<String, Integer> declaredWalks) {
         var problems = new ArrayList<String>();
         var remaining = new HashMap<String, Integer>();
+        var walksLeft = new HashMap<>(declaredWalks);
 
         entries.forEach(entry -> remaining.merge(entry, 1, Integer::sum));
         for (var hit : hits) {
-            if (remaining.merge(hit.key(), -1, Integer::sum) < 0) {
+            if (!excused(hit, remaining, walksLeft)) {
                 problems.add("flake pattern " + hit.kind() + " at " + hit.file() + ":" + hit.line() + ": " + hit.text()
                              + "\n    fix: " + hit.kind().fix());
             }
         }
         problems.addAll(staleEntries(remaining));
+        problems.addAll(staleWalks(walksLeft));
         problems.addAll(sizeProblems(entries.size(), committedCount));
         return problems;
+    }
+
+    /// Whether the allow-list or the declared walks excuse `hit`, consuming the entry it uses. A `PARK_SLEEP` hit is never excused: it is fixed.
+    private static boolean excused(Hit hit, Map<String, Integer> remaining, Map<String, Integer> walksLeft) {
+        return switch (hit.kind()) {
+            case PARK_SLEEP -> false;
+            case REPO_WALK -> walksLeft.merge(hit.file(), -1, Integer::sum) >= 0;
+            default -> remaining.merge(hit.key(), -1, Integer::sum) >= 0;
+        };
+    }
+
+    private static List<String> staleWalks(Map<String, Integer> walksLeft) {
+        return walksLeft.entrySet()
+                        .stream()
+                        .filter(entry -> entry.getValue() > 0)
+                        .map(entry -> "stale REPO_WALK declaration (the file holds no such walk any more, x" + entry.getValue() + "): " + entry.getKey()
+                                      + "\n    fix: delete it from RepoWalkExceptions")
+                        .sorted()
+                        .toList();
     }
 
     private static List<String> staleEntries(Map<String, Integer> remaining) {

@@ -4,29 +4,26 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.ember;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
-import java.util.UUID;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentEngine;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.LeaderKey;
-import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -41,14 +38,18 @@ import static org.pragmatica.aether.ember.StreamTripwireSupport.engineKey;
 
 /// #2600: a declarative stream consumer whose slice is ACTIVE only on a worker is assigned to that worker.
 ///
-/// 3 cores and 3 workers. A stream is created, a consumer declaration (`StreamRegistrationKey`) for a slice is committed, and the
-/// slice's observed row is committed ACTIVE on one worker only. The leader's `StreamConsumerManager` must read that worker as a live
-/// candidate (its `PartitionOwnership.liveWorkers`, wired in `AetherNode` from `MembershipFsm.workerCountedMembers`, the B1 liveness source:
-/// every core observes every member's descriptor) and commit the partition's `ConsumerAssignmentKey` naming it. Before the fix the
-/// candidate set was the core-only view, so the slice read as "not consumed yet" and no assignment was ever written.
+/// 3 cores and 3 workers. A stream is created, the slice is deployed WORKERS_ONLY (see [WorkerConsumerSlice]: a blueprint applied through the management
+/// API, then moved to workers; a real slice jar in a staged repository, so the worker loads it and writes its own ACTIVE row), and a consumer declaration (`StreamRegistrationKey`) for the slice is committed.
+/// The leader's `StreamConsumerManager` must read that worker as a live candidate (its `PartitionOwnership.liveWorkers`, wired in `AetherNode` from
+/// `MembershipFsm.workerCountedMembers`, the B1 liveness source: every core observes every member's descriptor) and commit the partition's
+/// `ConsumerAssignmentKey` naming it. Before the fix the candidate set was the core-only view, so the slice read as "not consumed yet" and no
+/// assignment was ever written.
 ///
-/// The slice itself is not loaded: the assignment is the admission the manager gives, and it is the part #2600 changes. That the worker then
-/// attaches a runtime subscription needs a real slice jar and is covered by `M1StreamLoadTest`'s worker arm.
+/// #3811: the slice's ACTIVE row used to be committed by hand for a slice no worker could load, and the test passed by winning a sub-second race with
+/// the orphan sweep. The fixture now has no way to write that row; the only ACTIVE row here is the one the worker's real load produced.
+///
+/// That the worker then attaches a runtime subscription and serves events is covered by `M1StreamLoadTest`'s worker arm; the restart of that
+/// subscription on a rewind by `EmberWorkerRewindRestartTest`.
 @PortBudget
 class EmberWorkerStreamConsumerTest {
     private static final int CORES = 3;
@@ -64,14 +65,17 @@ class EmberWorkerStreamConsumerTest {
                                                                                 APP_OFFSET);
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
-    private static final TimeSpan COMMIT_BOUND = TimeSpan.timeSpan(30).seconds();
     private static final long WAIT_BOUND_MS = 120_000L;
     private static final String STREAM = "w2600";
     private static final String CONFIG_SECTION = "stream.w2600";
     private static final String GROUP = "w2600-group";
     private static final Artifact SLICE = Artifact.artifact("org.example:w2600-consumer-slice:1.0.0").unwrap();
 
+    @TempDir
+    Path stagedRoot;
+
     private EmberCluster cluster;
+    private WorkerConsumerSlice slice;
 
     @AfterEach
     void tearDown() {
@@ -80,41 +84,45 @@ class EmberWorkerStreamConsumerTest {
         }
     }
 
-    private static EmberCluster fsm2Cluster(int base) {
-        var built = emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "w2600");
-
-        built.withDeploymentEngine(DeploymentEngine.LEGACY);
-
-        return built;
+    private EmberCluster stagedCluster(int base) {
+        return slice.install(emberCluster(CORES, base, base + MGMT_OFFSET, base + APP_OFFSET, "w2600"));
     }
 
-    /// Under LEGACY the stream-consumer placement view (`DeploymentMap`) is fed by `NodeArtifactKey` rows. FSM2 would condemn this hand-committed row as a stray instance (no desired row), so the test pins LEGACY.
     @Test
     @Timeout(900)
-    void consumerSliceActiveOnlyOnAWorker_isAssignedToThatWorker() {
-        cluster = EmberTestPorts.startedCluster(PORTS, EmberWorkerStreamConsumerTest::fsm2Cluster, START_BOUND);
+    void consumerSliceActiveOnlyOnAWorker_isAssignedToThatWorker() throws IOException {
+        slice = WorkerConsumerSlice.stagedAt(stagedRoot, SLICE);
+        cluster = EmberTestPorts.startedCluster(PORTS, this::stagedCluster, START_BOUND);
         awaitUntil(() -> cluster.currentLeader().isPresent(), WAIT_BOUND_MS, "a leader is elected");
 
         var workers = IntStream.range(0, WORKERS)
                                .mapToObj(_ -> startedWorker())
                                .toList();
-        var worker = workers.getFirst();
 
         awaitCondition("B1: the leader's membership counts every worker as a worker member",
                        () -> workers.stream().allMatch(id -> leader().membershipFsm().workerCountedMembers().contains(id)),
-                       () -> membership(worker));
+                       () -> membership(workers.getFirst()));
         StreamTripwireSupport.createStream(leader(), StreamTripwireSupport.smallRingStream(STREAM, 1, 1_000L, 3_600_000L));
-        commit(registrationKey(), AetherValue.StreamRegistrationValue.streamRegistrationValue(worker, GROUP, false, "java.lang.String"));
-        commit(AetherKey.NodeArtifactKey.nodeArtifactKey(worker, SLICE), AetherValue.NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
-
-        awaitCondition("the leader's DeploymentMap shows the worker ACTIVE",
-                       () -> leader().deploymentMap().byArtifact(SLICE).containsKey(worker),
-                       this::diagnostics);
+        slice.deployOnWorkers(cluster);
+        slice.awaitActiveOnEveryWorker(this::leader, workers, WAIT_BOUND_MS, this::diagnostics);
+        WorkerConsumerSlice.commit(leader(),
+                                   registrationKey(),
+                                   AetherValue.StreamRegistrationValue.streamRegistrationValue(workers.getFirst(), GROUP, false, "java.lang.String"));
         var assignment = AetherKey.ConsumerAssignmentKey.consumerAssignmentKey(engineKey(STREAM), 0, GROUP);
 
-        awaitUntil(() -> assignee(assignment).equals(Option.some(worker)),
+        awaitUntil(() -> assignedToAWorkerWhileWorkersOnly(assignment, workers),
                    WAIT_BOUND_MS,
-                   "the partition is assigned to the only worker the slice is ACTIVE on, got " + assignee(assignment) + diagnostics());
+                   "the partition is assigned to a worker (the slice is ACTIVE on workers only), got " + assignee(assignment) + diagnostics());
+        slice.assertAssigneeIsActiveWorker(cluster, assignee(assignment).unwrap(), workers);
+    }
+
+    /// The window the test relies on is registration to assignment: every poll first asserts the slice is still hosted by workers only, so an
+    /// assignment that appears is one made while no core hosted the slice (the core-only candidate view that #2600 fixed would have read a core host).
+    private boolean assignedToAWorkerWhileWorkersOnly(AetherKey.ConsumerAssignmentKey assignment, List<NodeId> workers) {
+        assertThat(slice.hostedByWorkersOnly(leader(), workers)).as("the slice stays hosted by workers only until the partition is assigned" + diagnostics())
+                                                               .isTrue();
+
+        return assignee(assignment).filter(workers::contains).isPresent();
     }
 
     private NodeId startedWorker() {
@@ -178,21 +186,6 @@ class EmberWorkerStreamConsumerTest {
         return leader().kvStore()
                        .getTyped(key, AetherValue.ConsumerAssignmentValue.class)
                        .map(AetherValue.ConsumerAssignmentValue::assignee);
-    }
-
-    private void commit(AetherKey key, AetherValue value) {
-        var node = leader();
-        var authority = node.kvStore().getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
-        var id = UUID.randomUUID().toString();
-        var transaction = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
-                                                                                  id,
-                                                                                  authority,
-                                                                                  List.of(),
-                                                                                  List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(value))));
-        var results = node.<Object> apply(List.of(transaction)).await(COMMIT_BOUND).unwrap();
-
-        assertThat(results).as("the commit of %s is accepted", key)
-                           .anyMatch(result -> result instanceof KVCommand.TransactionResult accepted && accepted.transactionId().equals(id) && accepted.accepted());
     }
 
     private AetherNode leader() {

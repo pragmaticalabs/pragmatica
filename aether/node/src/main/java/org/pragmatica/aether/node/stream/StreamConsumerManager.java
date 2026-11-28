@@ -287,16 +287,17 @@ public interface StreamConsumerManager {
         Map<NodeId, SliceState> placement(Artifact artifact);
     }
 
-    /// The rewind epoch committed in KV for one `(stream, partition, group)` (#1333), or none when no
-    /// checkpoint is committed. Read on every reconcile pass for every held subscription: a committed
-    /// epoch STRICTLY newer than the one the consumer runs under means a projection rebuild rewound
-    /// the group, and the consumer is restarted so it resumes at the rewound position under that epoch.
+    /// The rewind epoch committed in KV for each `(stream, partition, group)` (#1333), or none when no
+    /// checkpoint is committed. Asked once per reconcile pass with every subscription the pass holds; the
+    /// answer is that pass's lookup. A committed epoch STRICTLY newer than the one the consumer runs under
+    /// means a projection rebuild rewound the group, and the consumer is restarted so it resumes at the
+    /// rewound position under that epoch.
     @FunctionalInterface
     interface CommittedEpochSource {
-        Option<RewindEpoch> committedEpoch(String streamName, int partition, String consumerGroup);
+        Fn1<Option<RewindEpoch>, SubscriptionKey> forPass(List<SubscriptionKey> keys);
 
         static CommittedEpochSource none() {
-            return (_, _, _) -> Option.none();
+            return _ -> _ -> Option.none();
         }
     }
 
@@ -463,6 +464,12 @@ public interface StreamConsumerManager {
         private final Map<SubscriptionKey, ConsumerDeclaration> active = new ConcurrentHashMap<>();
         /// #1271: the committed assignment epoch each active subscription was admitted under.
         private final Map<SubscriptionKey, Epoch> admittedEpochs = new ConcurrentHashMap<>();
+        /// #3835: the committed rewind epoch each held key's consumer was last restarted for. An answered epoch restarts
+        /// a consumer at most once: a stale FOUND stays the node's answer until a later read lands, and without this a
+        /// pass between the restart and that landing abandoned the restarted consumer again for the same epoch. Dropped
+        /// with the key ([#forget]) and once the pass's answer for the key is any other epoch or none, so a new rewind to
+        /// the same epoch value restarts again. Written only under `passLock`.
+        private final Map<SubscriptionKey, RewindEpoch> restartedFor = new ConcurrentHashMap<>();
         /// #752: keys a pass reported as diverged and has not yet reported as repaired. Written only under `passLock`.
         private final Set<SubscriptionKey> diverged = ConcurrentHashMap.newKeySet();
         /// #2600: declarations (by identity) this leader reported as ACTIVE on no live candidate and has not yet
@@ -647,31 +654,45 @@ public interface StreamConsumerManager {
         /// the committed one when the fetch lands.
         private void restartRewound(Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
             var snapshots = snapshotsByKey();
+            var held = List.copyOf(active.keySet());
+            var epochs = committedEpochs.forPass(held);
+            var rewound = held.stream()
+                              .filter(key -> rewoundBehind(Option.option(snapshots.get(key)),
+                                                           epochs.apply(key)))
+                              .toList();
 
-            active.keySet()
-                  .stream()
-                  .filter(key -> rewoundBehind(key,
-                                               Option.option(snapshots.get(key))))
-                  .toList()
-                  .forEach(key -> restartForRewind(key, byGroup));
+            restartedFor.entrySet()
+                        .removeIf(entry -> !epochs.apply(entry.getKey())
+                                                  .equals(Option.some(entry.getValue())));
+            rewound.forEach(key -> restartOnce(key, epochs.apply(key), byGroup));
         }
 
-        private boolean rewoundBehind(SubscriptionKey key, Option<SubscriptionSnapshot> snapshot) {
+        /// #3835: the restart is the one abandon-and-reattach of a held key for a committed epoch; the same epoch seen
+        /// again, while the key stays rewound behind it, is the stale answer already acted on.
+        private void restartOnce(SubscriptionKey key,
+                                 Option<RewindEpoch> committed,
+                                 Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+            committed.filter(epoch -> !epoch.equals(restartedFor.get(key)))
+                     .onPresent(epoch -> restartForRewind(key, epoch, byGroup));
+        }
+
+        private static boolean rewoundBehind(Option<SubscriptionSnapshot> snapshot,
+                                             Option<RewindEpoch> committedEpoch) {
             return snapshot.filter(live -> !live.awaitingCursorFetch())
-                           .map(live -> committedEpochs.committedEpoch(key.streamName(),
-                                                                       key.partition(),
-                                                                       key.consumerGroup())
-                                                       .map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
-                                                       .or(false))
+                           .map(live -> committedEpoch.map(committed -> committed.isStrictlyAfter(live.rewindEpoch()))
+                                                      .or(false))
                            .or(false);
         }
 
-        private void restartForRewind(SubscriptionKey key, Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
+        private void restartForRewind(SubscriptionKey key,
+                                      RewindEpoch committed,
+                                      Map<ConsumerGroupKey, List<ConsumerDeclaration>> byGroup) {
             log.info("Consumer group {} on {}[{}] was rewound (committed epoch is newer than the consumer's); restarting it at the rewound cursor",
                      key.consumerGroup(),
                      key.streamName(),
                      key.partition());
             abandon(key);
+            restartedFor.put(key, committed);
             subscribeIfAbsent(key, byGroup);
         }
 
@@ -1256,6 +1277,7 @@ public interface StreamConsumerManager {
         private void forget(SubscriptionKey key) {
             active.remove(key);
             admittedEpochs.remove(key);
+            restartedFor.remove(key);
         }
 
         private void doSubscribe(SubscriptionKey key,
