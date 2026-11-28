@@ -17,6 +17,7 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.testlogging.SourceWalk;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -84,11 +85,13 @@ class DirectiveDeletersTripwireTest {
     private static TreeSet<String> receiptDeleters(Path root) {
         var found = new TreeSet<String>();
 
-        try (Stream<Path> files = Files.walk(root)) {
-            files.filter(file -> file.toString().endsWith(".java"))
-                 .filter(file -> file.toString().replace('\\', '/').contains("/src/main/java/"))
-                 .filter(file -> namesAndRemoves(file, "DirectiveReceiptKey"))
-                 .forEach(file -> found.add(file.getFileName().toString()));
+        try {
+            SourceWalk.files(root)
+                      .stream()
+                      .filter(file -> file.toString().endsWith(".java"))
+                      .filter(file -> file.toString().replace('\\', '/').contains("/src/main/java/"))
+                      .filter(file -> namesAndRemoves(file, "DirectiveReceiptKey"))
+                      .forEach(file -> found.add(file.getFileName().toString()));
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
