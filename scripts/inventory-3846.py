@@ -127,25 +127,26 @@ def show(r, got, status):
 
 # ---------------------------------------------------------------- the rows (memo r3 4a0d69bb §3.6, §5.0, P6-P9, S3; ruling R2)
 FM = r"FsmBackedLeaderManager\("
-row("M1", "3.6 row 1", FM, "all", 22, "new FsmBackedLeaderManager(a, b, c, d);", files=16,
-    note="LM:387 call, LM:400 declaration, 20 test calls in 15 files")
+row("M1", "3.6 row 1", FM, "all", 2, "new FsmBackedLeaderManager(a, b, c);", files=1,
+    note="lane M2: 22 -> 2 and 16 -> 1 files. The LM:387 call and the 20 test calls (15 files) moved to the factory fsmBackedLeaderManager(; what remains is the private constructor declaration and its one `new` inside the factory")
 FSM_CALL = r"\.fsm\(\)"
-row("M2a", "3.6 row 2; 5.19 f3846n F10", FSM_CALL, "integrations-test", 48, "x.fsm();", lines=47, files=20, memo=45,
-    note="RE-DECIDED: 46 occurrences on 45 lines in 19 files; LEEPT:177 holds two. The memo's 45 is the LINE count (grep -c). Lane C1: LeaderEpisodeDispatchTest adds 2 occurrences on 2 lines in 1 file (harness.fsm())")
+row("M2a", "3.6 row 2; 5.19 f3846n F10", FSM_CALL, "integrations-test", 19, "x.fsm();", lines=18, files=9, memo=45,
+    note="RE-DECIDED: 46 occurrences on 45 lines in 19 files; LEEPT:177 holds two. The memo's 45 is the LINE count (grep -c). Lane C1: LeaderEpisodeDispatchTest adds 2 occurrences on 2 lines in 1 file (harness.fsm()). Lane M: 48 -> 19, 47 -> 18 lines, 20 -> 9 files = -15 manager receivers (M2b: LMT 1, LRTT 7, POTT 7) and -14 harness.fsm() arguments of the 20 manager constructor sites, now the factory (M2d)")
 row("M2b", "3.6 row 2 manager receivers", FSM_CALL, ("integrations-test", r"/(?!LeaderManagerTest|LeaderReconnectTransportTest|PeerObservationOrderTransportTest)[^/]+$"),
-    15, "x.fsm();", files=3, note="LMT 1 + LRTT 7 + POTT 7, the receivers the manager row removes")
+    0, "x.fsm();", files=0, note="lane M: 15 -> 0. LMT 1 + LRTT 7 + POTT 7 were the receivers the manager row removes: M1 moved 7 manager.fsm().current() reads to context().current(); M2 moved LRTT/POTT's 8 built.fsm() dispatches to machine.inbound().submit")
 row("M2c", "3.6 row 2 LEEPT javac strings and docs", FSM_CALL, ("integrations-test", r"/(?!LeaderEpisodeEntryPathTest)[^/]+$"), 7, "x.fsm();",
     lines=6, files=1, note="LEEPT:98, 99, 107, 161, 162, 177 (177 holds two)")
 row("M2d", "3.6 row 2 harness lines", FSM_CALL, ("integrations-test", r"/(LeaderManagerTest|LeaderReconnectTransportTest|PeerObservationOrderTransportTest|LeaderEpisodeEntryPathTest)\.java$"),
-    26, "x.fsm();", files=16, memo=24, note="FsmTestHarness.fsm() on test-built machines; 46 = 15 + 7 + 24. Lane C1: LeaderEpisodeDispatchTest adds 2 in 1 file")
-row("M3", "3.6 row 3", r"\.inbound\(\)", "all", 2, "x.inbound();", files=2, memo=1,
-    note="memo 1 missed LeaderInboundForTest:28, a doc mention; code: LM:387 only (row M3m)")
-row("M3m", "3.6 row 3 main", r"\.inbound\(\)", "main", 1, "x.inbound();", files=1)
+    12, "x.fsm();", files=8, memo=24, note="FsmTestHarness.fsm() on test-built machines; 46 = 15 + 7 + 24. Lane C1: LeaderEpisodeDispatchTest adds 2 in 1 file. Lane M: 26 -> 12, 16 -> 8 files: the 14 harness.fsm() arguments of the manager constructor sites are gone with the constructor (M2)")
+row("M3", "3.6 row 3", r"\.inbound\(\)", "all", 13, "x.inbound();", files=5, memo=1,
+    note="memo 1 missed LeaderInboundForTest:28, a doc mention; code: LM:387 only (row M3m). Lane M: 2 -> 13, 2 -> 5 files = +1 LEF withoutFsm (machine.inbound()), +5 LRTT and +5 POTT (the two transport tests now build their own machine and dispatch through machine.inbound().submit, the factory argument being the fifth); none of them is a manager accessor")
+row("M3m", "3.6 row 3 main", r"\.inbound\(\)", "main", 2, "x.inbound();", files=2,
+    note="lane M: 1 -> 2 and 1 -> 2 files: LEF withoutFsm reads machine.inbound() (LEF, package-private Machine); the manager has no inbound() accessor (row M3, E06)")
 row("M4", "3.6 row 4", r"\.localMode\(\)", "all", 0, "x.localMode();")
-row("M5", "3.6 row 5", r"\.context\(\)", "integrations", 34, "x.context();", files=7, memo=34, note="LM:387 + 33 test lines in 6 files")
+row("M5", "3.6 row 5", r"\.context\(\)", "integrations", 44, "x.context();", files=9, memo=34, note="LM:387 + 33 test lines in 6 files. Lane M: 34 -> 44, 7 -> 9 files = +1 LMT (isLedBy reads context().current()), +1 LEF (withoutFsm machine.context()), +4 LRTT and +4 POTT (3 migrated manager reads each and the factory argument machine.context()); the Machine.context() allow-list key in LeaderAuthorityCensusTest is a scan source, excluded; new files: LMT and LEF")
 row("M6", "3.6 row 6", r"FsmWithContext\(", "all", 2, "new FsmWithContext(a, b);", files=1, note="LEF:37 declaration, LEF:195 construction")
-row("M7a", "3.6 row 7", r"leaderElectionFsm\(", ("all", r"/LeaderElectionFsm\.java$"), 1, "LeaderElectionFsm.leaderElectionFsm(a);",
-    note="LM:374 outside LEF")
+row("M7a", "3.6 row 7", r"leaderElectionFsm\(", ("all", r"/LeaderElectionFsm\.java$"), 3, "LeaderElectionFsm.leaderElectionFsm(a);",
+    note="LM:374 outside LEF. Lane M: 1 -> 3: LRTT and POTT build their own machine through the public widest overload (they are in net.quic, outside the package of the package-private LEF.machine)")
 row("M7b", "3.6 row 7 test machines", r"var fsm = Fsm\.<", "consensus-test", 4, "var fsm = Fsm.<A, B> fsm(c);", files=3, memo=4,
     note="LEPAT:309, LHFT:203, LSDCT:151 and :241 (the memo's 3 files)")
 row("M7c", "3.6 row 7 test machines, wider", r"Fsm\.<[^>]*>\s*fsm\(", "consensus-test", 7, "Fsm.<A, B> fsm(c);", files=6,
@@ -187,7 +188,7 @@ row("D1", "5.0, S1", r"fsm\.dispatch\(", "leader-main", 1, "fsm.dispatch(e);", f
 row("D2", "5.0, S1", r"fsm\.followUp\(", "leader-main", 1, "fsm.followUp(e);", files=1, memo=1)
 row("F1", "P7; r3846p F1", r"(?:\.|::)followUp\b", "leader-main", 6, "episode.followUp(e);", files=2, memo=3,
     note="CORRECTED by r3846p F1: State has 5 (178, 187, 287, 587, 1458), Ctx:1300 is fsm.followUp (D2); the memo's 3 missed :287, :1458")
-row("F2", "3.6 intro", r"\bfsm\b", "LM", 2, "var fsm = 1;", code_only=True, memo=2, note="LM:387 and LM:400, outside imports and docs")
+row("F2", "3.6 intro", r"\bfsm\b", "LM", 0, "var fsm = 1;", code_only=True, memo=2, note="LM:387 and LM:400, outside imports and docs. Lane M2: 2 -> 0, the manager holds no Fsm: the factory call no longer passes built.fsm() and the record header no longer carries the component")
 row("R1", "7.10 f3846n F10", r"leaderManager\.(?:installKvSyncProgress|enableLeaderPreVote|installTransportView)\(", "RabiaNode", 3,
     "leaderManager.installTransportView(a);", memo=3, note="RabiaNode:632, :636, :638")
 
