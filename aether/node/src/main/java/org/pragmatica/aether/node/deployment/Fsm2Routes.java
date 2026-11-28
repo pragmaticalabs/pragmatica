@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementOperation
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentApplyKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentOutcomeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.FsmWarningKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GovernorAnnouncementKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
@@ -97,6 +98,7 @@ public final class Fsm2Routes {
                                                                                         CommunityKey.class,
                                                                                         GovernorAnnouncementKey.class,
                                                                                         NodeDepartureKey.class,
+                                                                                        DirectiveReceiptKey.class,
                                                                                         ArtifactJudgmentKey.class,
                                                                                         DeploymentApplyKey.class,
                                                                                         DeploymentOutcomeKey.class,

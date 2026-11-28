@@ -25,6 +25,7 @@ import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceFallback;
+import org.pragmatica.aether.deployment.cluster.fsm2.RetirementUnit;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
@@ -45,6 +46,8 @@ import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.aether.deployment.cluster.fsm2.RetirementUnit.retirementUnit;
 
 
 /// Serial leader-side placement workflow. The durable phase precedes every provider effect;
@@ -1297,30 +1300,37 @@ record PlacementReconciler(NodeId self,
                     .map(results -> accepted(results, id));
     }
 
-    /// 12 item 4b: the departure record leaves in the same transaction as the directive (absent under LEGACY), and before it, so the cluster FSM
-    /// never sees a directive removed under a still-mirrored DEPARTED record. A COMPLETE refused once is retried by the next pass; it retires
-    /// the directive and the record only while the record is DEPARTED or absent (CTO rulings `4c533461f`, `5ca85aa4e`): an ADMITTED record
-    /// belongs to a process that came back after the decision, so the directive and the record stay. The placement row leaves either way.
+    /// 12 item 4b, #3828: the departure record leaves in the same transaction as the directive and the receipt (both absent under LEGACY, the
+    /// receipt absent before its first issue), the record first, so the cluster FSM never sees a directive removed under a still-mirrored
+    /// DEPARTED record. A COMPLETE refused once is retried by the next pass. The unit is read once by `retirementUnit`, and it is retired
+    /// whole only while its record is DEPARTED (CTO rulings `4c533461f`, `5ca85aa4e`): an ADMITTED record belongs to a process that came back
+    /// after the decision, so the record, the directive and the receipt stay. With NO record the COMPLETE carries no departure verdict: it
+    /// removes the directive as before and leaves the receipt, and that worker's recorded departure retires record and receipt through the
+    /// sweep (R3). The placement row leaves in every case.
     ///
     /// State alone, not the first-read identity the B18/B19 retirement compares: the operation carries no read of the departure record to
     /// compare against, and the property protected is that no live identity is retired. A DEPARTED record of a newer epoch is still a departed
     /// identity (a process re-admitted and departed again between two passes), so retiring it removes nothing live, and its own authority
-    /// stops once both keys are gone.
+    /// stops once the unit is gone.
     @Contract
     private void addCompletionRemovals(List<KVCommand.Mutation<AetherKey, AetherValue>> mutations, NodeId node) {
-        if (isRetirable(node)) {
-            addRemoval(mutations, new AetherKey.NodeDepartureKey(node));
+        var unit = retirementUnit(store::get, node);
+
+        if (isDeparted(unit)) {
+            mutations.addAll(unit.removals());
+        } else if (unit.record().isEmpty()) {
             addRemoval(mutations, new AetherKey.ActivationDirectiveKey(node));
         }
 
         addRemoval(mutations, new AetherKey.NodePlacementKey(node));
     }
 
-    private boolean isRetirable(NodeId node) {
-        return store.getTyped(new AetherKey.NodeDepartureKey(node),
-                              AetherValue.NodeDepartureValue.class)
-                    .map(record -> record.state() == AetherValue.DepartureState.DEPARTED)
-                    .or(true);
+    private static boolean isDeparted(RetirementUnit unit) {
+        return unit.record()
+                   .filter(AetherValue.NodeDepartureValue.class::isInstance)
+                   .map(AetherValue.NodeDepartureValue.class::cast)
+                   .map(record -> record.state() == AetherValue.DepartureState.DEPARTED)
+                   .or(false);
     }
 
     @Contract

@@ -509,7 +509,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private Object processCommand(KVCommand command) {
         return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
-            case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized || put.key() instanceof RestoreAuthorityKey
+            case Put<?, ?> put -> put.value() instanceof LeaderAuthorized || storage.get(put.key()) instanceof LeaderAuthorized || put.key() instanceof RestoreAuthorityKey || put.key() instanceof RetiredWithUnit
                                   ? Option.option(storage.get(put.key()))
                                   : handlePut((Put<K, V>) put);
             case KVCommand.LeaderTransaction<?, ?> transaction -> handleLeaderTransaction((KVCommand.LeaderTransaction<K, V>) transaction);
@@ -542,7 +542,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// The first failing check of a transaction, in the applier's order (#3303): LEADER (the transaction's leader is
     /// not the committed one), WITNESS (the first read witness unequal to its committed value), EXPECTED (the first
     /// mutation whose expected value is not the committed one), DISTINCT (the first key a mutation repeats), ARM (the
-    /// first mutation a committed-state fence refuses, see [#armAdmits]). Empty exactly when the transaction is
+    /// first mutation a committed-state fence refuses, see [#armAdmits], or a [RetiredWithUnit] key's unit fence, see [#unitAdmits]). Empty exactly when the transaction is
     /// accepted. EXPECTED is checked before DISTINCT, so a stale read is reported as the transient refusal it is. Reads
     /// only committed storage and the command, so every replica classifies a transaction identically.
     private Option<KVCommand.Refusal> refusalOf(KVCommand.LeaderTransaction<K, V> transaction) {
@@ -557,7 +557,8 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                        repeatedKeys(mutations)))
                             .orElse(() -> firstRefusal(KVCommand.RefusalKind.ARM,
                                                        keysWhere(mutations,
-                                                                 mutation -> !armAdmits(mutation))));
+                                                                 mutation -> !armAdmits(mutation) || !unitAdmits(transaction,
+                                                                                                                 mutation))));
     }
 
     private Option<KVCommand.Refusal> leaderRefusal(KVCommand.LeaderTransaction<K, V> transaction) {
@@ -614,6 +615,45 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     private boolean matchesExpected(KVCommand.Mutation<K, V> mutation) {
         return mutation.expected()
                        .equals(Option.option(storage.get(mutation.key())));
+    }
+
+    /// The unit fence of a [RetiredWithUnit] key (#3860): a mutation of it is admitted only as a removal, in a transaction that covers each of
+    /// its unit mates (see [#coversMate]). Any other mutation is admitted without a look.
+    private boolean unitAdmits(KVCommand.LeaderTransaction<K, V> transaction, KVCommand.Mutation<K, V> mutation) {
+        return switch (mutation.key()) {
+            case RetiredWithUnit member -> removesWithItsUnit(transaction, mutation, member);
+            default -> true;
+        };
+    }
+
+    private boolean removesWithItsUnit(KVCommand.LeaderTransaction<K, V> transaction,
+                                       KVCommand.Mutation<K, V> mutation,
+                                       RetiredWithUnit member) {
+        return mutation.replacement()
+                       .isEmpty() && member.unitMates()
+                                           .stream()
+                                           .allMatch(mate -> coversMate(transaction, mate));
+    }
+
+    /// A mate is covered when the transaction removes it, or witnesses it absent (a witness the applier already compared to committed storage).
+    private boolean coversMate(KVCommand.LeaderTransaction<K, V> transaction, StructuredKey mate) {
+        return removes(transaction, mate) || witnessesAbsent(transaction, mate);
+    }
+
+    private boolean removes(KVCommand.LeaderTransaction<K, V> transaction, StructuredKey key) {
+        return transaction.mutations()
+                          .stream()
+                          .anyMatch(mutation -> mutation.key()
+                                                        .equals(key) && mutation.replacement()
+                                                                                .isEmpty());
+    }
+
+    private boolean witnessesAbsent(KVCommand.LeaderTransaction<K, V> transaction, StructuredKey key) {
+        return transaction.guards()
+                          .stream()
+                          .anyMatch(witness -> witness.key()
+                                                      .equals(key) && witness.expected()
+                                                                             .isEmpty());
     }
 
     /// The committed-state fences a mutation must pass once its expected value matches: no write to the [LeaderKey]; a

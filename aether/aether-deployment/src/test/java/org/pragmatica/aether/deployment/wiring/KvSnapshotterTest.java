@@ -55,6 +55,7 @@ class KvSnapshotterTest {
                                                                                   "CommunityKey",
                                                                                   "GovernorAnnouncementKey",
                                                                                   "NodeDepartureKey",
+                                                                                  "DirectiveReceiptKey",
                                                                                   "ArtifactJudgmentKey",
                                                                                   "DeploymentApplyKey",
                                                                                   "DeploymentOutcomeKey",

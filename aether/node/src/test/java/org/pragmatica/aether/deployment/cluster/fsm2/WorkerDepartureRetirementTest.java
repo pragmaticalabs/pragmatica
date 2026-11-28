@@ -11,6 +11,7 @@ import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Settlement;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeDepartureKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceObservedKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
@@ -298,44 +299,53 @@ class WorkerDepartureRetirementTest {
         return resubmissions.getLast();
     }
 
-    // D8/D11 — Red when: a refused worker C17b is resubmitted with the record's removal but without the directive's (the retirement is
-    // not kept whole), which would retire the record against a directive that still stands.
+    // D8/D11 (#3828, design 3.4: the unit is recomputed from the mirror, never the refused draft's own unit filtered) — Red when: the
+    // resubmission of a refused worker C17b whose directive moved keeps the old unit, so the moved directive is removed at its old value
+    // (refused again) or the record is retired without it.
     @Test
-    void refusedWorkerCleanup_directiveMoved_resubmissionKeepsTheRetirementWhole() {
-        var again = refusedForMovedDirective(world());
+    void refusedWorkerCleanup_directiveMoved_resubmissionRetiresTheUnitRecomputedFromTheMirror() {
+        var w = world();
+        var again = refusedForMovedDirective(w);
+        var mutations = again.transaction().mutations();
 
-        assertThat(removes(again, new NodeDepartureKey(worker))).as("the record's removal is split out with the moved directive").isFalse();
-        assertThat(removes(again, new ActivationDirectiveKey(worker))).as("the moved directive is not removed on a stale expectation").isFalse();
+        assertThat(mutations).extracting(KVCommand.Mutation::key)
+                  .as("the record, then the directive, then the unmoved row")
+                  .containsExactly(new NodeDepartureKey(worker), new ActivationDirectiveKey(worker), new SliceObservedKey(worker, ORDERS));
+        assertThat(mutations.get(1).expected()).as("the directive at the value the mirror now holds")
+                  .isEqualTo(Option.some(ActivationDirectiveValue.worker("c1", "hint-2")));
     }
 
-    // D10 — Red when: the resubmission that no longer removes the record drops the witness on it, so it could commit after the
-    // record moved on (a rejoin), with no guard to refuse it.
+    // D10 (#3828) — Red when: the resubmission drops the unit's witnesses (the receipt is absent), so it could commit after a receipt
+    // appeared; the record's own removal at the DEPARTED value it was read at is its guard, with no witness on the same key.
     @Test
-    void refusedWorkerCleanup_directiveMoved_resubmissionStaysGuardedByTheUnchangedRecord() {
+    void refusedWorkerCleanup_directiveMoved_resubmissionIsGuardedByTheRecordsRemovalAndTheUnitsWitnesses() {
         var w = world();
         var again = refusedForMovedDirective(w);
         var departedRecord = w.recordOf(worker);
 
         assertThat(departedRecord.map(NodeDepartureValue::state)).as("the record stands, DEPARTED").isEqualTo(Option.some(DepartureState.DEPARTED));
+        assertThat(again.transaction().mutations().getFirst().expected()).as("the record's removal expects the DEPARTED value the mirror holds")
+                  .isEqualTo(departedRecord);
         assertThat(again.transaction().guards())
-                  .as("a witness on the record, expecting the DEPARTED value the mirror holds")
-                  .containsExactly(new KVCommand.ReadWitness<AetherKey>(new NodeDepartureKey(worker), departedRecord.map(v -> (Object) v)));
+                  .as("a witness that no receipt exists, and none on the record")
+                  .containsExactly(new KVCommand.ReadWitness<AetherKey>(new DirectiveReceiptKey(worker), Option.none()));
     }
 
-    // D11 — Red when: the resubmission carries the mutations whose keys moved, not only the unmoved ones (the row, alone, is what
-    // still stands on its expectation).
+    // D11 (#3828) — Red when: the resubmission carries a row whose key moved, not only the unmoved ones (the unit is recomputed
+    // beside them).
     @Test
-    void refusedWorkerCleanup_directiveMoved_resubmitsOnlyTheUnmovedMutations() {
+    void refusedWorkerCleanup_directiveMoved_resubmitsOnlyTheUnmovedRowsBesideTheUnit() {
         var again = refusedForMovedDirective(world());
 
         assertThat(again.transaction().mutations()).extracting(KVCommand.Mutation::key)
+                  .filteredOn(key -> !(key instanceof NodeDepartureKey) && !(key instanceof ActivationDirectiveKey))
                   .containsExactly(new SliceObservedKey(worker, ORDERS));
     }
 
-    // D8 — Red when: the only unmoved part of a refused worker C17b is the record's own removal, and it is resubmitted alone (the
-    // directive moved, so the record must stay until a fresh C17b retires both).
+    // D8 — Red when: the only unmoved part of a refused worker C17b is the record's own removal, and it is resubmitted alone, without the
+    // directive (#3828: the resubmitted unit carries the moved directive at its new value, so the record never leaves alone).
     @Test
-    void refusedWorkerCleanup_directiveMovedAndNothingElseUnmoved_resubmitsNothing() {
+    void refusedWorkerCleanup_directiveMovedAndNothingElseUnmoved_neverRemovesTheRecordWithoutTheDirective() {
         var w = world();
 
         w.h.policy = FsmHarness.SettlePolicy.HOLD;

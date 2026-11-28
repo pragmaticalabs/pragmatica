@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -14,6 +15,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
 import org.pragmatica.cluster.state.kvstore.HolderGuarded;
 import org.pragmatica.cluster.state.kvstore.RestoreAuthorityKey;
+import org.pragmatica.cluster.state.kvstore.RetiredWithUnit;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1666,6 +1668,41 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The directive receipt of one node id (#3828): the committed fact that the cluster FSM issued an activation directive to that node id, kept
+    /// after the directive itself is gone. A [RuntimeKey], read only by the cluster FSM and not replicated to workers. Inert at this lane: nothing
+    /// writes it, and the applier admits only its removal together with its unit mates, the departure record and the directive of the same node
+    /// ([RetiredWithUnit]; the one production owner is `RetirementUnit`).
+    record DirectiveReceiptKey(NodeId nodeId) implements RuntimeKey, RetiredWithUnit {
+        private static final String PREFIX = "directive-receipt/";
+
+        @Override
+        public List<AetherKey> unitMates() {
+            return List.of(new NodeDepartureKey(nodeId), new ActivationDirectiveKey(nodeId));
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DirectiveReceiptKey directiveReceiptKey(NodeId nodeId) {
+            return new DirectiveReceiptKey(nodeId);
+        }
+
+        public static Result<DirectiveReceiptKey> directiveReceiptKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DIRECTIVE_RECEIPT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(DirectiveReceiptKey::new);
+        }
+    }
+
     /// The lifecycle record of one node id (O3, owner ruling c37a7c11e2): its identity facet (the admitted process) and its capacity facet (the
     /// reservation) under one key, never deleted. A [RuntimeKey], classified as [CapacityReservationKey] is, which this record replaces at the O3-4 flip;
     /// the identity LEDGER on each core's disk, not the KV, is what survives the loss of every holder.
@@ -1706,6 +1743,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> DECLARED_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid declared-route key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
+    Fn1<Cause, String> DIRECTIVE_RECEIPT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid directive-receipt key format: %s");
 
     Fn1<Cause, String> NODE_IDENTITY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-identity key format: %s");
 

@@ -59,7 +59,8 @@ public interface JoinGenerationGuard {
     /// 14: #3359 (`IncarnationTag` gained `lineageId`).
     /// 15: #3041 (`ConsumerGroupValue` and `ConsumerGroupTombstone` gained `streamIncarnation`).
     /// 16: #3389 (`AppBlueprintValue` gained `declaredRoutes`).
-    int WIRE_GENERATION = 16;
+    /// 17: #3828 (semantic: `TerminationRetirement` judges `NodeDepartureValue` and `ActivationDirectiveValue` by one epoch comparison; four `SEMANTIC` baseline lines).
+    int WIRE_GENERATION = 17;
     /// Bound on waiting for core members to handshake [guess: taste; a constant, not configuration].
     TimeSpan JOIN_GENERATION_WAIT = TimeSpan.timeSpan(10).seconds();
     /// Handshake poll cadence while waiting.

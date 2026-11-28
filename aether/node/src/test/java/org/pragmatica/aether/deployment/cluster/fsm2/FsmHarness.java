@@ -23,12 +23,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
@@ -38,6 +40,8 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// The interpreter of the cluster FSM for tests: an injected wall and monotonic clock, an injected scheduler (a due-time
@@ -202,7 +206,9 @@ final class FsmHarness {
     /// `LeaderTransaction` for a `LeaderAuthorized` one. Notifications are delivered to the FSM like any other.
     @SuppressWarnings({"unchecked", "rawtypes"})
     void seed(AetherKey key, AetherValue value) {
-        if (value instanceof LeaderAuthorized) {
+        if (key instanceof AetherKey.DirectiveReceiptKey) {
+            plantEffect(new KVCommand.Put<AetherKey, AetherValue>(key, value));
+        } else if (value instanceof LeaderAuthorized) {
             var leader = committedLeader().or(new LeaderValue(SELF, 1L));
             var expected = store.get(key);
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, expected, Option.some(value));
@@ -221,7 +227,9 @@ final class FsmHarness {
     void seedRemove(AetherKey key) {
         var current = store.get(key);
 
-        if (current.isPresent() && current.or((AetherValue) null) instanceof LeaderAuthorized) {
+        if (key instanceof AetherKey.DirectiveReceiptKey) {
+            plantEffect(new KVCommand.Remove<AetherKey>(key, current.map(v -> (Object) v)));
+        } else if (current.isPresent() && current.or((AetherValue) null) instanceof LeaderAuthorized) {
             var leader = committedLeader().or(new LeaderValue(SELF, 1L));
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, current, Option.none());
 
@@ -233,6 +241,16 @@ final class FsmHarness {
         } else {
             applyCommand(new KVCommand.Remove<AetherKey>(key, current.map(v -> (Object) v)));
         }
+    }
+
+    /// Planted through applyEffects (the replica's plain-effect writer, which notifies like a commit): production has no receipt writer and the
+    /// applier refuses a receipt put and a lone receipt removal by design (#3860), so a fixture cannot reach the state any other way.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void plantEffect(KVCommand effect) {
+        var raw = (KVStore) store;
+        var revision = raw.committedRevision();
+
+        raw.applyEffects(new ReplicaEntry(IncarnationTag.NONE, revision, revision, "plant", List.of(effect)));
     }
 
     /// Seed without telling the FSM (state that already existed before it was activated).
@@ -315,7 +333,24 @@ final class FsmHarness {
         }
     }
 
+    /// Receipt inertness (#3828, PR A: the receipt is a key type nothing writes yet): no transaction the FSM builds puts a `DirectiveReceiptKey`.
+    /// Every mutation on that key is a removal (an absent replacement). The ONE place every FSM test's transaction passes before it is applied
+    /// or lost, so a put beside a directive, in any transaction shape, fails here by name. The same rule guards the retirements and the
+    /// placement reconciler in aether-deployment's tests (`ReceiptInertness`: that module's test classes are not visible here). Fixture
+    /// receipts are written through `seed`, never through a `Submit`.
+    private static void assertReceiptInert(ClusterEffect.Submit submit) {
+        submit.transaction()
+              .mutations()
+              .stream()
+              .filter(mutation -> mutation.key() instanceof AetherKey.DirectiveReceiptKey)
+              .forEach(mutation -> assertThat(mutation.replacement().isEmpty())
+                                       .as("receipt inertness: a %s transaction puts the receipt key %s", submit.kind(), mutation.key())
+                                       .isTrue());
+    }
+
     private void submitted(ClusterEffect.Submit submit) {
+        assertReceiptInert(submit);
+
         var effective = loseKinds.contains(submit.kind())
                         ? SettlePolicy.LOSE
                         : holdKinds.contains(submit.kind())
