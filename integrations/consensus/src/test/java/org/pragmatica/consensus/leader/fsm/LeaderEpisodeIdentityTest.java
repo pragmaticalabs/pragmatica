@@ -109,6 +109,27 @@ class LeaderEpisodeIdentityTest {
                   .isSameAs(tickOfEpisodeTwo);
     }
 
+    // ---- #3846 St1: the reschedule path takes its episode from the handler, never from a lookup ----
+    /// A topology event the handler of the current entry handles reschedules that entry's tick (the instrument). The same
+    /// event handled with no request, as K22 does (`handle(event, null)`), mints the never-live episode: the handler
+    /// applies the view and arms nothing.
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void topologyChange_handledWithNoRequest_reschedulesNoTick(boolean reElecting) {
+        start();
+        enterElection(reElecting);
+        var tickAtEntry = tickFutureOfCurrent();
+
+        OnDrainer.dispatch(harness, new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()));
+        var tickAfterRequest = tickFutureOfCurrent();
+
+        assertThat((Object) tickAfterRequest).as("instrument: a topology event of the current entry reschedules its tick")
+                  .isNotSameAs(tickAtEntry);
+        OnDrainer.run(ctx, () -> harness.state().handle(new ClusterFsmEvent.NodeAdded(SELF, CORES, seq()), null));
+        assertThat((Object) tickFutureOfCurrent()).as("a handler with no request armed a tick through an episode that is never live")
+                  .isSameAs(tickAfterRequest);
+    }
+
     // ---- input 3, promise half: the saved record re-entered ----
     @Test
     void lateProposalFailure_ofAnExitedEntry_leavesTheSavedRecordsNewEntryOutstanding() {
