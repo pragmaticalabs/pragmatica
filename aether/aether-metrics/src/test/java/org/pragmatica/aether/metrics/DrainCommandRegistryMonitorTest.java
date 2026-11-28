@@ -5,7 +5,7 @@ package org.pragmatica.aether.metrics;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.junit.jupiter.api.AfterEach;
@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DrainCommandRegistryMonitorTest {
     private static final NodeId PAUSED = NodeId.nodeId("paused").unwrap();
     private static final NodeId OTHER = NodeId.nodeId("other").unwrap();
-    private static final long WITHIN_MILLIS = 400L;
+    private static final long DECIDE_NANOS = TimeUnit.SECONDS.toNanos(5);
 
     private final CompletableFuture<Void> entered = new CompletableFuture<>();
     private final CompletableFuture<Void> letGo = new CompletableFuture<>();
@@ -50,18 +50,37 @@ class DrainCommandRegistryMonitorTest {
     private void assertExcludedWhileARequestHoldsTheMonitor(Consumer<DrainCommandRegistry> write) {
         var holder = CompletableFuture.runAsync(() -> registry.requestDrain(PAUSED));
         entered.orTimeout(5, TimeUnit.SECONDS).join();
-        var other = CompletableFuture.runAsync(() -> write.accept(registry));
+        var writer = new AtomicReference<Thread>();
+        var other = CompletableFuture.runAsync(() -> runRecording(write, writer));
 
-        assertThat(finishesWithin(other)).as("the write ran while a request held the registry's monitor").isFalse();
+        assertThat(blocksOnTheMonitor(other, writer)).as("the write ran while a request held the registry's monitor").isTrue();
 
         letGo.complete(null);
         other.orTimeout(5, TimeUnit.SECONDS).join();
         holder.orTimeout(5, TimeUnit.SECONDS).join();
     }
 
-    private static boolean finishesWithin(CompletableFuture<Void> future) {
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(WITHIN_MILLIS));
-        return future.isDone();
+    private void runRecording(Consumer<DrainCommandRegistry> write, AtomicReference<Thread> writer) {
+        writer.set(Thread.currentThread());
+        write.accept(registry);
+    }
+
+    /// Decided by the writer's own state, never by a pause: `true` once it is blocked on a monitor, `false` once it finished
+    /// without blocking. A slow host cannot turn an unexcluded write into a pass.
+    private static boolean blocksOnTheMonitor(CompletableFuture<Void> write, AtomicReference<Thread> writer) {
+        var deadline = System.nanoTime() + DECIDE_NANOS;
+
+        while (!write.isDone() && System.nanoTime() < deadline) {
+            if (isBlocked(writer.get())) {
+                return true;
+            }
+            Thread.onSpinWait();
+        }
+        return false;
+    }
+
+    private static boolean isBlocked(Thread thread) {
+        return thread != null && thread.getState() == Thread.State.BLOCKED;
     }
 
     @Test
