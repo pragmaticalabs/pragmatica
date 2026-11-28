@@ -51,7 +51,7 @@ class LeaderTxFreeArmTripwireTest {
         var ctx = ledContext();
 
         try {
-            var led = (LeaderElectionState.Led) ctx.current();
+            var led = seededLed(ctx);
 
             inbound(ctx).serially(() -> led.handle(new PeerRemovedFromView(OTHER), null));
 
@@ -70,7 +70,7 @@ class LeaderTxFreeArmTripwireTest {
         var ctx = ledContext();
 
         try {
-            var led = (LeaderElectionState.Led) ctx.current();
+            var led = seededLed(ctx);
 
             inbound(ctx).serially(() -> led.handle(new PeerRemovedFromView(PEER), null));
 
@@ -90,7 +90,7 @@ class LeaderTxFreeArmTripwireTest {
         var ctx = ledContext();
 
         try {
-            var led = (LeaderElectionState.Led) ctx.current();
+            var led = seededLed(ctx);
 
             inbound(ctx).serially(() -> led.handle(new PeerRemovedFromView(PEER), null));
 
@@ -101,6 +101,18 @@ class LeaderTxFreeArmTripwireTest {
         } finally {
             inbound(ctx).stop();
         }
+    }
+
+    /// The stored view starts empty, so a removal would end any tenure: the view [CORES] is stored first, through the same
+    /// tx-free arm (`NodeAdded`, State:615), and the tenure must stand after it.
+    private static LeaderElectionState.Led seededLed(LeaderElectionContext ctx) {
+        var led = (LeaderElectionState.Led) ctx.current();
+
+        inbound(ctx).serially(() -> led.handle(new ClusterFsmEvent.NodeAdded(SELF, CORES, 1L), null));
+        assertThat(ctx.current()).as("instrument: the view [core-0, core-1, core-2] holds the leader, so Led stands")
+                                 .isSameAs(led);
+
+        return led;
     }
 
     private static LeaderElectionContext ledContext() {
