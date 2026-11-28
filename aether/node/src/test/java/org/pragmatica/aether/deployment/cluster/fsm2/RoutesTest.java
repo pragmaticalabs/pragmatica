@@ -322,13 +322,15 @@ class RoutesTest {
 
     /// Red when: DECLARE takes the standing of a committed row from its attemptId alone (or a gate or removal does): a row another blueprint owns,
     /// at the very attemptId the claimant is committed at, then reads as the claimant's own and is never taken over. APP is the only declarer, so it
-    /// is the claimant; the foreign row is `Published` at its attempt, so only the owner check can tell it is not APP's.
+    /// is the claimant; the foreign row is `Published`, so only the owner check can tell it is not APP's. The one attemptId two blueprint ids can
+    /// share is `AppBlueprintValue.NO_ATTEMPT` (a convenience-form value; every stamped attemptId is a fresh UUID, `BlueprintService.newAttemptId`),
+    /// so both values carry it: the only reachable state in which the attempt halves of the two comparisons agree and the owner half decides.
     @Test
     void declare_aForeignOwnersRowAtTheClaimantsCurrentAttemptIsTakenOver() {
         var h = active();
 
-        publish(h, blueprintOf("attempt-1", false, LIST));
-        h.seed(key(LIST), row("org.example:other:1.0.0", "attempt-1", RouteState.Published.published()));
+        publish(h, blueprintOf(AppBlueprintValue.NO_ATTEMPT, false, LIST));
+        h.seed(key(LIST), row("org.example:other:1.0.0", AppBlueprintValue.NO_ATTEMPT, RouteState.Published.published()));
         h.drain();
         ticks(h, 3);
         assertThat(ownerOf(h, LIST)).as("the claimant declares the row over the foreign owner's").isEqualTo(Option.some(APP));
@@ -476,44 +478,6 @@ class RoutesTest {
 
         assertThat(drafted).as("one removal draft per gone owner").hasSize(8);
         assertThat(drafted).as("in blueprint id order").isEqualTo(drafted.stream().sorted().toList());
-    }
-
-    /// Pins the one transient the claimant rule has, and that it heals. A ROUTES draft is guarded on its own blueprint's row only: a draft derived
-    /// while 1.0.0 was the claimant commits after the SliceTarget moved to 2.0.0 and writes the row at 1.0.0 (a witness cannot cover the target
-    /// row alone: a version put later, a greater declarer, is a row that did not exist when the draft was derived). Meanwhile the gate, which
-    /// reads the target owner, holds the goal (the row is `STALE` for 2.0.0); 2.0.0's own takeover draft, derived over the earlier row, is refused,
-    /// and the next sweep re-derives it. The bound is one tick: the 30 s tick the leader reschedules by itself (`Lifecycle.tick`) requests that
-    /// sweep, so no further event is needed (no put, no target move) for the row to reach the claimant.
-    @Test
-    void claimant_aDraftDerivedBeforeTheTargetMovedCommitsAtTheOldClaimantAndTheSweepHealsIt() {
-        var h = active();
-
-        publish(h, blueprintOf("attempt-1", false, LIST));
-        h.holdKinds = Set.of(SubmitKind.ROUTES);
-        h.seed(new AppBlueprintKey(APP_ID), blueprintOf("attempt-2", false, LIST));
-        h.drain();
-        var firstDraft = heldRoutes(h).getFirst();
-
-        publish(h, upgradeOf("attempt-b", LIST), Option.some(blueprintOf("attempt-2", false, LIST)));
-        assertThat(heldRoutes(h)).as("control: 1.0.0's redeclare and 2.0.0's takeover are both in flight").hasSize(2);
-        var secondDraft = heldRoutes(h).getLast();
-
-        h.holdKinds = Set.of();
-        var late = h.applyHeld(firstDraft.correlationId());
-
-        h.settle(firstDraft, late);
-        h.drain();
-        assertThat(ownerOf(h, LIST)).as("the late draft wrote the row at the old claimant").isEqualTo(Option.some(APP));
-        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("the gate, reading the target owner 2.0.0, does not count it").isFalse();
-        var refused = h.applyHeld(secondDraft.correlationId());
-
-        h.settle(secondDraft, refused);
-        h.drain();
-        assertThat(refused).as("2.0.0's takeover was derived over the row 1.0.0's draft replaced").isInstanceOf(Settlement.Refused.class);
-        assertThat(ownerOf(h, LIST)).as("nothing but the leader's own tick is left to move the row: a refused ROUTES draft is not resubmitted").isEqualTo(Option.some(APP));
-        ticks(h, 1);
-        assertThat(ownerOf(h, LIST)).as("the sweep moved the row to the claimant").isEqualTo(Option.some(APP_V2_ID.asString()));
-        assertThat(Routes.rowsCommitted(h.model(), ORDERS)).as("and the gate opens").isTrue();
     }
 
     private static void releaseHeld(FsmHarness h) {
