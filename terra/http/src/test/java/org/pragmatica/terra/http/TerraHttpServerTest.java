@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.terra.http;
 
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -35,6 +36,7 @@ import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.*;
+import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Option;
@@ -702,6 +704,86 @@ class TerraHttpServerTest {
         assertThat(TerraHttpMount.terraHttpMount("/", Option.some(HttpServerConfig.httpServerConfig("terra-root", 0)), _ -> SecurityPolicy.publicRoute(),
                                                  (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isSuccess()).isTrue();
         assertThat(TerraHttpMount.terraHttpMount("/m/n-1.x_y~z", Option.none(), _ -> SecurityPolicy.publicRoute(), (_, _) -> Promise.success(HttpResponseData.httpResponseData(200))).isSuccess()).isTrue();
+    }
+
+    /// #3651: the host reserves its `/__terra/` probe namespace; a slice route at or above it is refused before binding.
+    @Test void start_sliceRouteInTheProbeNamespace_failsAndReleasesApplication() {
+        for (var path : List.of("/__terra/x", "/__terra")) {
+            var released = new AtomicInteger();
+            var route = Route.<String>get(path).withoutParameters().to(_ -> Promise.success("one")).withSecurity(SecurityPolicy.publicRoute()).asText();
+            var result = TerraHttpServer.start(application(released), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+                List.of(new Routes<>(Sample.class, List.of(route), SliceVersionRegistry.UNVERSIONED)), JsonMapper.defaultJsonMapper()).await(timeSpan(10).seconds());
+            String message = result.<String>fold(cause -> cause.message(), _ -> "started");
+            assertThat(message).as(path).contains("overlaps reserved /__terra/ namespace: " + path);
+            assertThat(released).as(path).hasValue(1);
+        }
+    }
+
+    /// #3651 "no server left unstoppable": a start that fails after an own-listener mount bound stops that mount's listener.
+    @Test void mount_failedStart_releasesTheOwnListenerItAlreadyBound() throws Exception {
+        var occupied = HttpServer.httpServer(HttpServerConfig.httpServerConfig("occupied", 0), (_, _) -> {}).await(timeSpan(5).seconds()).unwrap();
+        var mountPort = freePort();
+        var own = Option.some(HttpServerConfig.httpServerConfig("terra-mount", mountPort));
+        var conflict = TerraHttpConfig.terraHttpConfig(HttpServerConfig.httpServerConfig("conflict", occupied.port()), RouteMountMode.pathMode(), SecurityPolicy.apiKeyRequired()).unwrap();
+        try {
+            var result = TerraHttpServer.start(application(new AtomicInteger()), conflict, HttpAuthenticator.denyUnlessPublicValidator(),
+                List.of(), JsonMapper.defaultJsonMapper(), List.of(mount("/m", own, SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds());
+            var rebound = HttpServer.httpServer(HttpServerConfig.httpServerConfig("rebind", mountPort), (_, _) -> {}).await(timeSpan(5).seconds());
+
+            assertThat(result.isFailure()).isTrue();
+            assertThat(rebound.isSuccess()).as("the mount listener is released by the failed start").isTrue();
+            rebound.unwrap().stop().await(timeSpan(10).seconds()).unwrap();
+        } finally { occupied.stop().await(timeSpan(10).seconds()).unwrap(); }
+    }
+
+    /// #3651: the handler a mount runs receives the context the host authenticated, not the anonymous one it read.
+    @Test void mount_handler_receivesTheAuthenticatedContext() throws Exception {
+        var seen = TerraHttpMount.terraHttpMount("/m", Option.none(), _ -> SecurityPolicy.authenticated(),
+            (context, _) -> Promise.success(HttpResponseData.httpResponseData(200, context.security().isAuthenticated() ? "authenticated" : "anonymous"))).unwrap();
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.apiKeyValidator(Set.of("mount-key")),
+            List.of(), JsonMapper.defaultJsonMapper(), List.of(seen)).await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            assertThat(get(client, host, "/m", "X-API-Key", "mount-key").body()).isEqualTo("authenticated");
+        } finally { close(host); }
+    }
+
+    /// README: base path `/` mounts at the root, so the root mount owns every path of its own listener.
+    @Test void mount_rootBasePath_ownsEveryPathOfItsOwnListener() throws Exception {
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/", Option.some(HttpServerConfig.httpServerConfig("terra-root", 0)), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            var port = host.mountPort("/").unwrap();
+
+            for (var path : List.of("/", "/health", "/deep/er/path")) {
+                assertThat(getOn(client, port, path).body()).as(path).isEqualTo("mounted");
+            }
+        } finally { close(host); }
+    }
+
+    /// #3651: an own listener answers only its base path and the paths beneath it; anything else is 404, never the handler.
+    @Test void mount_ownListener_answers404OutsideItsBasePath() throws Exception {
+        var host = TerraHttpServer.start(application(new AtomicInteger()), config(RouteMountMode.pathMode()), HttpAuthenticator.denyUnlessPublicValidator(),
+            List.of(), JsonMapper.defaultJsonMapper(),
+            List.of(mount("/m", Option.some(HttpServerConfig.httpServerConfig("terra-mount", 0)), SecurityPolicy.publicRoute()))).await(timeSpan(10).seconds()).unwrap();
+        try (var client = HttpClient.newHttpClient()) {
+            var port = host.mountPort("/m").unwrap();
+
+            assertThat(getOn(client, port, "/m/deeper").body()).isEqualTo("mounted");
+            for (var path : List.of("/", "/mx", "/other/m")) {
+                assertThat(getOn(client, port, path).statusCode()).as(path).isEqualTo(404);
+            }
+        } finally { close(host); }
+    }
+
+    private static int freePort() throws Exception {
+        try (var socket = new ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    private static HttpResponse<String> getOn(HttpClient client, int port, String path) throws Exception {
+        return client.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + path)).timeout(Duration.ofSeconds(5)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static TerraHttpMount mount(String basePath, Option<HttpServerConfig> listener, SecurityPolicy policy) {

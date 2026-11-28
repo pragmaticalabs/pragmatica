@@ -89,6 +89,25 @@ class TerraConfigurationTest {
         assertThat(TerraLaunchPlan.load(directory).await(timeSpan(5).seconds()).isFailure()).isTrue();
     }
 
+    /// README: an unrecognised `management.*` key stops the load; the sink exemption is the exact namespaces, never a
+    /// prefix of one or a key that merely contains one.
+    @Test void load_managementKeyBesideTheSinkNamespaces_isRefused() throws Exception {
+        Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
+        for (var section : List.of("[management.prometheus]\ntypo = \"x\"\n", "[management.server.management.otlp.metrics.export]\nurl = \"x\"\n")) {
+            Files.writeString(directory.resolve("terra.toml"), section);
+
+            assertThat(TerraLaunchPlan.load(directory).await(timeSpan(5).seconds()).isFailure()).as(section).isTrue();
+        }
+    }
+
+    /// README: terra.toml has a `[jwt]` section, read as a host key beside http, api_keys, authenticator, management and info.
+    @Test void deployment_jwtSection_isAHostKeyAndReachesTheAuthenticatorSettings() throws Exception {
+        Files.writeString(directory.resolve("terra.toml"), "[jwt]\nissuer = \"https://issuer.example\"\n");
+        var deployment = TerraConfiguration.deployment(directory).unwrap();
+
+        assertThat(TerraConfiguration.host(directory, deployment).unwrap().getString("jwt.issuer").unwrap()).isEqualTo("https://issuer.example");
+    }
+
     @Test void load_noManagementSection_startsWithNoPrometheusSink() throws Exception {
         Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:starting:1\"\n");
         var app = TerraLaunchPlan.load(directory).flatMap(TerraLaunchPlan::startApplication).await(timeSpan(5).seconds()).unwrap();

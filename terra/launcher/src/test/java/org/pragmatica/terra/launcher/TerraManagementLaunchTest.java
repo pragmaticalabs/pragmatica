@@ -72,6 +72,22 @@ class TerraManagementLaunchTest {
         }
     }
 
+    /// README wire contracts through the real launch: GET only with `Allow: GET`, discovery at the base path with a
+    /// trailing slash, components shown without their details while `show-details` is `never`.
+    @Test void launch_wireContracts_allowGet_discoveryAtSlash_componentsWithoutDetails() throws Exception {
+        var host = launch("test:ok:1", HTTP + "[management.endpoint.health]\nshow-components = \"always\"\n");
+        try {
+            var post = send(host.port(), "POST", "/actuator/health");
+            var slash = send(host.port(), "GET", "/actuator/", "X-API-Key", KEY);
+
+            assertThat(post.statusCode()).isEqualTo(405);
+            assertThat(post.headers().firstValue("Allow")).hasValue("GET");
+            assertThat(slash.statusCode()).isEqualTo(200);
+            assertThat(compact(slash)).contains("\"self\"");
+            assertThat(compact(send(host.port(), "GET", "/actuator/health/diskSpace"))).doesNotContain("details");
+        } finally { close(host); }
+    }
+
     @Test void load_malformedExposureList_refusedAtLoadNamingTheKey() throws Exception {
         for (var include : new String[]{"\"[health\"", "[\"health\", \"in fo\"]", "\"\\\"health\\\"\""}) {
             Files.writeString(directory.resolve("blueprint.toml"), "[[slices]]\nartifact = \"test:ok:1\"\n");
@@ -179,6 +195,15 @@ class TerraManagementLaunchTest {
     private static HttpResponse<String> get(int port, String path) throws Exception {
         try (var client = HttpClient.newHttpClient()) {
             return client.send(request("http", port, path), HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
+    private static HttpResponse<String> send(int port, String method, String path, String... headers) throws Exception {
+        try (var client = HttpClient.newHttpClient()) {
+            var builder = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path)).timeout(Duration.ofSeconds(5))
+                                     .method(method, HttpRequest.BodyPublishers.noBody());
+            if (headers.length > 0) { builder.headers(headers); }
+            return client.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         }
     }
 
