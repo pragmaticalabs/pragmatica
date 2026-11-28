@@ -353,15 +353,15 @@ class BackupEntryCodecTest {
                                                     .isEmpty();
         }
 
-        /// #3860 round 3, K5: a document that names a receipt is refused `KeyNotBackedUp`, so a restore never reaches the put.
+        /// #3860 round 3, K5: a document that names a receipt is refused `UnrecognisedKey` (the parser knows only `ClusterStateKey` types), so a restore never reaches the put.
         @Test
         void receiptKey_decode_refusesAReceiptLine() {
             var document = sealedDocument(line(RECEIPT_VALUE,
                                                RECEIPT.asString()));
 
-            assertThat(failures(CODEC.decode(document))).as("decode of a document with a receipt line is refused KeyNotBackedUp")
+            assertThat(failures(CODEC.decode(document))).as("decode of a document with a receipt line is refused UnrecognisedKey")
                                                         .singleElement()
-                                                        .isInstanceOf(BackupError.KeyNotBackedUp.class);
+                                                        .isInstanceOf(BackupError.UnrecognisedKey.class);
         }
 
         /// #420 T11b, versions half: the same refusal for an `ArtifactVersionsKey` line, read directly.
