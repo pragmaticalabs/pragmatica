@@ -27,7 +27,6 @@ import org.pragmatica.aether.node.ReplaceWriteCheck;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator.RestoreError.Blocked.Step;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.CommunityKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterIncarnationKey;
@@ -35,7 +34,6 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.DeploymentEngineKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.GossipKeyRotationKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
@@ -100,8 +98,6 @@ class BackupRestoreCoordinatorTest {
     private static final String LINEAGE = "01K4ZT9Q6W3X8Y2B7C5D1E0F9G";
     private static final ConfigValue ALPHA = ConfigValue.configValue("alpha", "1");
     private static final ConfigValue BETA = ConfigValue.configValue("beta", "2");
-    private static final DirectiveReceiptKey RECEIPT = new DirectiveReceiptKey(NodeId.nodeId("worker-9").unwrap());
-    private static final DirectiveReceiptValue RECEIPT_VALUE = DirectiveReceiptValue.directiveReceiptValue("worker");
     private static final BlueprintId BLUEPRINT = BlueprintId.blueprintId("org.test:restore:1.0.0")
                                                             .unwrap();
     private static final ClusterConfigValue CLUSTER_CONFIG = new ClusterConfigValue(Option.none(),
@@ -483,38 +479,6 @@ class BackupRestoreCoordinatorTest {
             });
             assertThat(warnings).extracting(BackupWarning::code)
                                 .doesNotContain(Code.BACKUP_HEAD_AHEAD, Code.BACKUP_GATED);
-        }
-
-        /// Tripwire (#3860 round 3, writer kind K5 of `facts-f3860d`, the backup restore): `BackupRestoreCoordinator.mutation` puts every entry of the
-        /// backup document, whatever its key, so a document that names a directive receipt installs it today. Green now; it goes red the day a
-        /// production enforcer lands, which names it for retirement.
-        @Test
-        void aBackupDocumentThatNamesAReceipt_installsItToday() {
-            var remote = bareRemote(temp.resolve("remote.git"));
-
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(RECEIPT, RECEIPT_VALUE));
-
-            runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
-
-            assertThat(kvStore.get(RECEIPT)).as("the restore put the receipt (the invariant is not enforced yet)").isEqualTo(Option.some(RECEIPT_VALUE));
-        }
-
-        /// Real assertion (K5): a restore never installs a receipt, whether the enforcer refuses the chunk or throws (a throw escapes the
-        /// restore as a failed decision, which this assertion does not judge: only the store does).
-        @Test
-        @Disabled("lane B: enable when the production enforcer lands (#3860 round 3); the enabled tripwire beside it then goes red and is retired")
-        void aBackupDocumentThatNamesAReceipt_neverInstallsIt() {
-            var remote = bareRemote(temp.resolve("remote.git"));
-
-            seedRemote(remote, BackupHeader.backupHeader(LINEAGE, 3, INCARNATION_ID, 40), Map.of(RECEIPT, RECEIPT_VALUE));
-
-            try {
-                runToCompletion(coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO))));
-            } catch (RuntimeException | AssertionError expected) {
-                // allowed outcomes: the restore refused or threw; the store is what is judged
-            }
-
-            assertThat(kvStore.get(RECEIPT)).isEqualTo(Option.none());
         }
 
         /// A new leader finds an interrupted restore of a commit: it resumes THAT commit — even though the

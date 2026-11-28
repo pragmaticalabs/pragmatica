@@ -33,6 +33,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ClusterStateKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityArcWaiverKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntityCheckpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EntitySeedOfferKey;
@@ -42,6 +43,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.TopicSubscriptionKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ConfigValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityArcWaiverValue.WaiverCase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EntityFoldCheckpointValue;
@@ -80,6 +82,8 @@ class BackupEntryCodecTest {
     static final String INCARNATION_ID = "01K4ZT9Q6W3X8Y2B7C5D1INST0";
     private static final BackupEntryCodec CODEC = BackupEntryCodec.backupEntryCodec(BackupFixtures.codec());
     private static final long REVISION = 42L;
+    private static final DirectiveReceiptKey RECEIPT = DirectiveReceiptKey.directiveReceiptKey(NodeId.nodeId("worker-9").unwrap());
+    private static final DirectiveReceiptValue RECEIPT_VALUE = DirectiveReceiptValue.directiveReceiptValue("worker");
     private static final ArtifactBase ARTIFACT_BASE = ArtifactBase.artifactBase("org.example:orders-slice").unwrap();
     private static final NodeId NODE = NodeId.nodeId("node-1")
                                              .unwrap();
@@ -333,6 +337,29 @@ class BackupEntryCodecTest {
                                                       .asString()));
 
             assertThat(failures(CODEC.decode(document))).as("T11b decode of a document with an artifact line is refused KeyNotBackedUp")
+                                                        .singleElement()
+                                                        .isInstanceOf(BackupError.KeyNotBackedUp.class);
+        }
+
+        /// #3860 round 3, writer kind K5 of `facts-f3860d` (the backup restore): `BackupRestoreCoordinator` puts every entry of the decoded document, whatever its
+        /// key, so the only thing that keeps a directive receipt out of a restore is this codec. A `DirectiveReceiptKey` is a `RuntimeKey`, so encode drops it.
+        @Test
+        void receiptKey_encode_hasNoReceiptLine() {
+            var encoded = CODEC.encode(REVISION, Map.of(RECEIPT, RECEIPT_VALUE));
+
+            assertThat(encoded.isSuccess()).as("PRECONDITION encode succeeds: " + encoded)
+                                           .isTrue();
+            assertThat(entryLines(encoded.unwrap())).as("the encoded document has no receipt line")
+                                                    .isEmpty();
+        }
+
+        /// #3860 round 3, K5: a document that names a receipt is refused `KeyNotBackedUp`, so a restore never reaches the put.
+        @Test
+        void receiptKey_decode_refusesAReceiptLine() {
+            var document = sealedDocument(line(RECEIPT_VALUE,
+                                               RECEIPT.asString()));
+
+            assertThat(failures(CODEC.decode(document))).as("decode of a document with a receipt line is refused KeyNotBackedUp")
                                                         .singleElement()
                                                         .isInstanceOf(BackupError.KeyNotBackedUp.class);
         }
