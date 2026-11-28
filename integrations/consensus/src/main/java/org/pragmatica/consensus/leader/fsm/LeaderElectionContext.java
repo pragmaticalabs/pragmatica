@@ -35,6 +35,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.react.ReactExecutor;
 import org.pragmatica.statemachine.Fsm;
+import org.pragmatica.statemachine.TransitionRequest;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -254,6 +255,8 @@ public final class LeaderElectionContext {
     private final AtomicLong refusedNullIdentities = new AtomicLong(0);
     private final AtomicLong refusedInbound = new AtomicLong(0);
     private final AtomicLong refusedFollowUps = new AtomicLong(0);
+    /// #3846 INV-E: dispatches refused by [#dispatchIfLive] because their episode is no longer current.
+    private final AtomicLong refusedDispatches = new AtomicLong(0);
     /// The handle of the node's own lifetime, for the sources no state owns (the view re-assertion).
     private final EpisodeHandle nodeLifetime = new EpisodeHandle(NODE_LIFETIME);
     private final AtomicReference<Option<NodeId>> currentLeader = new AtomicReference<>(Option.none());
@@ -1142,9 +1145,11 @@ public final class LeaderElectionContext {
         return stopped;
     }
 
-    /// The current state, read only (#3846 residual): the FSM itself is not exposed, because `Fsm#dispatch` reached
-    /// from an async callback would run a handler outside the episode fence and outside [#dispatchConfined].
-    LeaderElectionState current() {
+    /// The current state, read only (#3846, INV-E): public because reading changes nothing in the node's order. The FSM
+    /// itself is not exposed, because `Fsm#dispatch` reached from an async callback would enter the order without an
+    /// episode: a state moves the FSM only through the [EpisodeHandle] its own entry or request yielded
+    /// ([EpisodeHandle#dispatch]), which admits the event only while that episode is current.
+    public LeaderElectionState current() {
         return fsm.current();
     }
 
@@ -1158,11 +1163,14 @@ public final class LeaderElectionContext {
         return confinementBreaches.get();
     }
 
-    /// #3846: the identity of ONE episode of an asynchronous source: a timer, a promise completion, any callback that
-    /// enters the election FSM later than the code that started it. `isLive()` is read INSIDE the serial task, after every
-    /// task queued ahead of the completion (the exit of the episode, a re-entry) ran, so reading it and acting on it are
-    /// one task. A state's episode is one ENTRY into it (the [OwnerLifetime] that [Fsm] hands the entry hook, which ends
-    /// when a successor's CAS wins), never the state record: an entry is new on every entry, a record may be entered again.
+    /// #3846, INV-E (admission): the identity of ONE episode of a source: a timer, a promise completion, a handler's own
+    /// dispatch, any callback that enters the election FSM later than the code that started it. A task or an event enters
+    /// the node's serial order only through a value its episode's source handed down ([EpisodeHandle]), and it is admitted
+    /// only while that episode is current. `isLive()` is read INSIDE the serial task, after every task queued ahead of the
+    /// completion (the exit of the episode, a re-entry) ran, so reading it and acting on it are one task. A state's episode
+    /// is one ENTRY into it (the [OwnerLifetime] that [Fsm] hands the entry hook, and the one a [TransitionRequest]
+    /// carries, which end when a successor's CAS wins), never the state record: an entry is new on every entry, a record
+    /// may be entered again.
     ///
     /// GUARANTEE: an identity is built only from an entry, a pre-vote suspicion or the node's lifetime, never from a
     /// caller's own predicate. MECHANISM: the interface is sealed, so a lambda is not a target for it and a new
@@ -1219,9 +1227,10 @@ public final class LeaderElectionContext {
                      .isPresent();
     }
 
-    /// #3846 round 2: the ONE way for FSM code to reach the serial executor, or [Fsm#followUp], from outside the current
-    /// dispatch frame. GUARANTEE: a call through the handle takes effect only if its episode is still the current one when
-    /// it runs; otherwise it is a no-op that the debug log and the refusal counters show. MECHANISM: the handle is the
+    /// #3846 round 2, INV-E: the ONE way for FSM code to reach the serial executor, [Fsm#dispatch] or [Fsm#followUp] from
+    /// outside the current dispatch frame, and the only value a state sends an event through. GUARANTEE: a call through
+    /// the handle takes effect only if its episode is still the current one when it runs; otherwise it is a no-op that the
+    /// debug log and the refusal counters show. MECHANISM: the handle is the
     /// RECEIVER, never an argument, so a `null` cannot stand in for it; its constructor is private to this class, so code
     /// of `leader.fsm` cannot build one; a state receives its own at entry ([LeaderElectionState#onEntered]) and keeps no
     /// path to the executor or the Fsm besides it. The run-time check is [#runIfLive] ([EpisodeIdentity#isLive]).
@@ -1256,12 +1265,35 @@ public final class LeaderElectionContext {
         public void followUp(ClusterFsmEvent event) {
             followUpIfLive(identity, event);
         }
+
+        /// #3846 INV-E: `event` into the FSM, in the node's one order, only while this episode is current ([#dispatchIfLive]).
+        /// The receiver is the episode, never an argument: a state dispatches through the handle its own entry or request
+        /// yielded, so an event of a left episode is refused and counted ([#refusedDispatchesForTest]) instead of reaching
+        /// the state that replaced it. A call from a thread that is not the drainer throws, as [#dispatchConfined] does.
+        @Contract
+        public void dispatch(ClusterFsmEvent event) {
+            dispatchIfLive(identity, event);
+        }
+
+        /// Whether this handle's episode is current now: the check for an effect OUTSIDE the order (a proposal to the
+        /// consensus engine), which admission does not cover. Read it on the drainer, in the task that acts on it.
+        boolean isCurrent() {
+            return identity.isLive();
+        }
     }
 
     /// The handle of the entry whose lifetime the Fsm handed the entry hook. A missing (`null`) lifetime is refused by
     /// [#handleOver]: the handle it yields is never live.
     EpisodeHandle entryEpisode(OwnerLifetime lifetime) {
         return handleOver(Option.option(lifetime).<EpisodeIdentity> map(Entry::new));
+    }
+
+    /// #3846 INV-E: the handle of the entry that `tx` was built for, for a handler to send its events through. A missing
+    /// (`null`) request is refused by [#handleOver]. A request used outside its dispatch frame throws at `tx.lifetime()`
+    /// ([TransitionRequest#lifetime]) and yields nothing. The handle is dead once its own transition leaves the entry, so a
+    /// handler that keeps running after its transition dispatches nothing.
+    EpisodeHandle handlerEpisode(TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+        return handleOver(Option.option(tx).<EpisodeIdentity> map(request -> new Entry(request.lifetime())));
     }
 
     /// The handle of a source that is not a state: `identity` is that source's own identity (the pre-vote's suspicion
@@ -1291,6 +1323,22 @@ public final class LeaderElectionContext {
             task.run();
         } else {
             log.debug("Dropping a completion of an exited episode: the FSM is in {}",
+                      fsm.current().getClass().getSimpleName());
+        }
+    }
+
+    @Contract
+    private void dispatchIfLive(EpisodeIdentity episode, ClusterFsmEvent event) {
+        if (!serial.isConfined()) {
+            throw confinementBreach(event);
+        }
+
+        if (episode.isLive()) {
+            dispatchConfined(event);
+        } else {
+            refusedDispatches.incrementAndGet();
+            log.debug("Refused a dispatch {} of an exited episode: the FSM is in {}",
+                      event.getClass().getSimpleName(),
                       fsm.current().getClass().getSimpleName());
         }
     }
@@ -1404,6 +1452,11 @@ public final class LeaderElectionContext {
     /// Test seam (#3846 round 2): the follow-ups [#followUpIfLive] refused.
     long refusedFollowUpsForTest() {
         return refusedFollowUps.get();
+    }
+
+    /// Test seam (#3846 INV-E): the dispatches [#dispatchIfLive] refused because their episode was no longer current.
+    long refusedDispatchesForTest() {
+        return refusedDispatches.get();
     }
 
     /// #3605 round-4 ruling: the ONE FSM dispatch of leader code ([Inbound#submit], the stop, and `dispatchSelf` in the
