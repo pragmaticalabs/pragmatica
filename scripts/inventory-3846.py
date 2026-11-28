@@ -150,12 +150,12 @@ row("M7b", "3.6 row 7 test machines", r"var fsm = Fsm\.<", "consensus-test", 4, 
     note="LEPAT:309, LHFT:203, LSDCT:151 and :241 (the memo's 3 files)")
 row("M7c", "3.6 row 7 test machines, wider", r"Fsm\.<[^>]*>\s*fsm\(", "consensus-test", 7, "Fsm.<A, B> fsm(c);", files=6,
     note="FINDING: also LDCT:259, LTSCT:557 (field assignments) and LKFUT:293 (a return); the memo's `var fsm = Fsm.` form missed them")
-row("M7d", "3.6 row 7", r"new LeaderElectionContext\(", "integrations", 35, "new LeaderElectionContext(a);", files=32,
-    note="LEF:214 in main + 34 test sites in 31 files (memo 34 sites in 31 files)")
-row("M7e", "3.6 row 7", r"new LeaderElectionContext\(", "test", 34, "new LeaderElectionContext(a);", files=31, memo=34)
-row("M7f", "3.6 row 7", r"FsmTestHarness", "consensus-test", 107, "FsmTestHarness h;", files=28, memo=28, note="the memo counts files: 28")
+row("M7d", "3.6 row 7", r"new LeaderElectionContext\(", "integrations", 36, "new LeaderElectionContext(a);", files=33,
+    note="LEF:214 in main + 35 test sites in 32 files (memo 34 sites in 31 files; LeaderRunTimeRowsTest adds 1 site, 1 file)")
+row("M7e", "3.6 row 7", r"new LeaderElectionContext\(", "test", 35, "new LeaderElectionContext(a);", files=32, memo=34, note="LeaderRunTimeRowsTest adds 1 site in 1 file")
+row("M7f", "3.6 row 7", r"FsmTestHarness", "consensus-test", 118, "FsmTestHarness h;", files=29, memo=28, note="the memo counts files: 28; LeaderRunTimeRowsTest adds 11 occurrences in 1 file")
 row("M8", "3.6 row 8; 5.0", r"claimInbound", "all", 9, "claimInbound();", files=4, memo=9)
-row("M9", "3.6 row 9", r"leaderPreVote\(", "all", 2, "leaderPreVote(a);", files=2, note="PreVote:90 definition, Ctx:765")
+row("M9", "3.6 row 9", r"leaderPreVote\(", "all", 5, "leaderPreVote(a);", files=3, note="PreVote:90 definition, Ctx:765, and the 3 calls in LeaderRunTimeRowsTest (K24 forged pre-vote rows)")
 row("M10", "3.6 row 10; 5.0", r"current\(\)", "leader-main", 12, "x.current();", files=3, memo=12,
     note="12 raw hits; 9 count, 3 do not (Ctx:146, Ctx:1148, State:1647)")
 row("M10t", "3.6 row 10 tests", r"(?:ctx|context|ctx\(\)|context\(\)|contextOf\([^)]*\))\.current\(\)", "leader-fsm-test", 25, "ctx.current();",
