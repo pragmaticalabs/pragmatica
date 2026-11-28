@@ -175,6 +175,35 @@ class ReceiptWriterTripwireTest {
         assertThat(store.get(RECEIPT)).isEqualTo(Option.some(RECEIPT_VALUE));
     }
 
+    /// Forged input: the receipt and the record removed beside a directive that is present and untouched (the unit's third member stays).
+    @Test
+    void aReceiptRemoval_besideAPresentUntouchedDirective_isRefused() {
+        ReceiptInertness.plant(store, RECEIPT, RECEIPT_VALUE);
+        ReceiptInertness.plant(store, new NodeDepartureKey(GONE), DEPARTED);
+        ReceiptInertness.plant(store, new ActivationDirectiveKey(GONE), ActivationDirectiveValue.worker());
+        var guards = List.of(new KVCommand.ReadWitness<AetherKey>(new ActivationDirectiveKey(GONE), Option.some(ActivationDirectiveValue.worker())));
+        var recordRemoval = new KVCommand.Mutation<AetherKey, AetherValue>(new NodeDepartureKey(GONE), Option.some(DEPARTED), Option.none());
+
+        var results = process(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(RECEIPT, "forged-directive", LEADER, guards, List.of(removal(), recordRemoval))));
+
+        assertThat(refusedAtTheReceipt(results)).as("a present directive that is not retired with the receipt refuses the removal").isTrue();
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.some(RECEIPT_VALUE));
+    }
+
+    /// Forged input: a mate that the transaction REPLACES is not removed, so it does not cover the unit (the receipt leaves a record that stays).
+    @Test
+    void aReceiptRemoval_besideAMateThatIsReplacedNotRemoved_isRefused() {
+        ReceiptInertness.plant(store, RECEIPT, RECEIPT_VALUE);
+        ReceiptInertness.plant(store, new NodeDepartureKey(GONE), DEPARTED);
+        var guards = List.of(new KVCommand.ReadWitness<AetherKey>(new ActivationDirectiveKey(GONE), Option.none()));
+        var recordReplaced = new KVCommand.Mutation<AetherKey, AetherValue>(new NodeDepartureKey(GONE), Option.some(DEPARTED), Option.some(DEPARTED));
+
+        var results = process(List.of(new KVCommand.LeaderTransaction<AetherKey, AetherValue>(RECEIPT, "forged-replaced", LEADER, guards, List.of(removal(), recordReplaced))));
+
+        assertThat(refusedAtTheReceipt(results)).as("a replaced mate is not a removed one: the removal is refused at the receipt").isTrue();
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.some(RECEIPT_VALUE));
+    }
+
     // -- K2, bare commands (E4, E5): refused by the existing LeaderAuthorized arm; these are controls that must stay refused -------------
 
     /// Control (E4): a bare `Put` of the receipt value is dropped by the applier's LeaderAuthorized arm, and must stay dropped.
