@@ -32,11 +32,9 @@ import org.pragmatica.statemachine.FsmObserver;
 /// [`LeaderElectionContext.Inbound#serially`]), which every leader-election event of the node enters; a direct `Fsm.dispatch`
 /// (tests only) runs on the caller's thread.
 public final class LeaderElectionFsm {
-    /// Pair of the built Fsm and its context. Returned together so the factory caller (the
-    /// `LeaderManager` builder) can wire both into the final `LeaderManager` record.
-    public record FsmWithContext(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
-                                 LeaderElectionContext context,
-                                 LeaderElectionContext.Inbound inbound) {}
+    /// The built context and its one claimed Inbound. Returned together so the factory caller (the
+    /// `LeaderManager` builder) can wire both into the `LeaderManager`. The Fsm is not part of it (#3846).
+    public record FsmWithContext(LeaderElectionContext context, LeaderElectionContext.Inbound inbound) {}
 
     /// The Fsm, its context and its one claimed Inbound: what [#machine] builds. Package-private (#3846).
     record Machine(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
@@ -194,7 +192,7 @@ public final class LeaderElectionFsm {
     }
 
     private static FsmWithContext withoutFsm(Machine machine) {
-        return new FsmWithContext(machine.fsm(), machine.context(), machine.inbound());
+        return new FsmWithContext(machine.context(), machine.inbound());
     }
 
     /// The built Fsm with its context and its one claimed Inbound. Package-private: the Fsm leaves the builder's hands
