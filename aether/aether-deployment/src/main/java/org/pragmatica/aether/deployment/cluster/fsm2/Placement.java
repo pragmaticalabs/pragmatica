@@ -150,8 +150,13 @@ public sealed interface Placement {
     /// #3815: a committed target whose audience is empty is not placed, and the operator is told once per episode (`placement-audience-empty`,
     /// closed by `placement-audience-available`). FER (degrade forward): the target stays unplaced; the floor is not lowered here, because it
     /// is the DHT replication factor. Guarantee: the stall is visible, never silent. Mechanism: the committed open set of `Warnings`.
+    ///
+    /// #3870: the audience reads `ready`, which a `Rebuild` snapshot can take before the readiness view exists, so an empty reading
+    /// from that snapshot is not a stall: a clean deploy would open and close the event inside one startup window (two `WARNINGS`
+    /// transactions on every deploy). The event waits for the first sample taken after the `Rebuild` (`sampledAfterRebuild`, the same
+    /// bar `Joins.listedOrAlive` sets for `localAlive`); `Lifecycle.onSeams` requests the pass that sample unlocks.
     private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
-        return activationInFlight(m, ctx, policy)
+        return !m.sampledAfterRebuild || activationInFlight(m, ctx, policy)
                ? m
                : Warnings.raise(m,
                                 Warnings.EMPTY_AUDIENCE,
