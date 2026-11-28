@@ -625,7 +625,7 @@ class LeaderManagerTest {
 
     private static boolean isLedBy(LeaderManager manager, NodeId leader) {
         return manager instanceof LeaderManager.FsmBackedLeaderManager fsmBacked
-               && fsmBacked.fsm().current() instanceof LeaderElectionState.Led led
+               && fsmBacked.context().current() instanceof LeaderElectionState.Led led
                && led.leader().equals(leader);
     }
 

@@ -141,15 +141,15 @@ class PeerObservationOrderTransportTest {
     }
 
     private boolean suspectsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
     }
 
     private boolean followsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
     }
 
     private String followerState() {
-        return "follower FSM " + manager.fsm().current() + ", follower topology " + manager.context().currentTopology();
+        return "follower FSM " + manager.context().current() + ", follower topology " + manager.context().currentTopology();
     }
 
     @Test

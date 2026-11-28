@@ -94,19 +94,19 @@ class LeaderReconnectTransportTest {
     }
 
     private boolean followsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
     }
 
     /// What a timed-out wait needs to be read: the follower's FSM state, its view of the electorate, and both ends of the link.
     private String linkState(QuicClusterNetwork follower, QuicClusterNetwork leader) {
-        return "follower FSM " + manager.fsm().current()
+        return "follower FSM " + manager.context().current()
                + ", follower topology " + manager.context().currentTopology()
                + ", follower sees leader connected=" + connected(follower, LEADER)
                + ", leader sees follower connected=" + connected(leader, FOLLOWER);
     }
 
     private boolean suspectsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
     }
 
     @Test
