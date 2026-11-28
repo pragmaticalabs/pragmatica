@@ -204,10 +204,9 @@ class LeaderHookFollowUpTest {
                                                                  f -> context(f, router, local).dormant(),
                                                                  recorder());
 
-        return new FsmBackedLeaderManager(fsm,
-                                          fsm.current().ctx(),
-                                          inbound(fsm.current().ctx()),
-                                          local);
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(fsm.current().ctx(),
+                                                             inbound(fsm.current().ctx()),
+                                                             local);
     }
 
     /// A drainer held by another thread until [HeldDrainer#release].

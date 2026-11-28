@@ -88,7 +88,7 @@ class LeaderAdoptionSequenceGateTest {
     void excludedCoreObservesVerifiedLeaderWithoutReenteringElection() {
         var h = harness(new AtomicReference<>(Option.<NodeId>none()));
         var ctx = ctxOf(h);
-        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, inbound(ctx), false);
+        var manager = org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         // #3581: the excluded core is a passive observer, which adopts a committed leader only while its stored view
         // holds it, so the transport view names the cluster first.
         h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, List.of(SELF, LEADER, SUCCESSOR), seq()));
@@ -125,7 +125,7 @@ class LeaderAdoptionSequenceGateTest {
                 LeaderElectionContext.DEFAULT_JITTER_SOURCE,
                 LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER, ready::get, Option::none, LONG, LONG).dormant());
         var ctx = ctxOf(h);
-        var manager = new org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager(h.fsm(), ctx, inbound(ctx), false);
+        var manager = org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(1, List.of(LEADER, SUCCESSOR)).unwrap());
         manager.installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration.voterConfiguration(2, List.of(SELF, LEADER, SUCCESSOR)).unwrap());
         assertThat(h.state()).isInstanceOf(LeaderElectionState.QuorumWaiting.class);

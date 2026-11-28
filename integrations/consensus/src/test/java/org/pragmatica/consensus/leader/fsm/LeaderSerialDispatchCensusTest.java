@@ -151,10 +151,9 @@ class LeaderSerialDispatchCensusTest {
         var fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-serial-census-throwing-stop",
                                                                  f -> context(f, router).dormant(),
                                                                  throwingOnStop());
-        var manager = new FsmBackedLeaderManager(fsm,
-                                                 fsm.current().ctx(),
-                                                 inbound(fsm.current().ctx()),
-                                                 false);
+        var manager = FsmBackedLeaderManager.fsmBackedLeaderManager(fsm.current().ctx(),
+                                                                    inbound(fsm.current().ctx()),
+                                                                    false);
 
         manager.stop();
         assertThat(fsm.current()).as("instrument: Shutdown was dispatched")
@@ -243,7 +242,7 @@ class LeaderSerialDispatchCensusTest {
                                                                  recorder());
         var ctx = fsm.current().ctx();
 
-        return new FsmBackedLeaderManager(fsm, ctx, inbound(ctx), false);
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
     }
 
     private FsmObserver<LeaderElectionState, ClusterFsmEvent> recorder() {

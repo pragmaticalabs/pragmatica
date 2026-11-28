@@ -163,7 +163,7 @@ class LeaderPreVoteTest {
 
             router.addRoute(Send.class, (Consumer<Send>) send -> route(id, send));
 
-            return new Node(id, harness, ctx, new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false), proposals);
+            return new Node(id, harness, ctx, FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false), proposals);
         }
 
         private void wire(Node node) {

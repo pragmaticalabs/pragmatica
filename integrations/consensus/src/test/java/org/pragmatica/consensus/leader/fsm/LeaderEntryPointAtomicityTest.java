@@ -310,7 +310,7 @@ class LeaderEntryPointAtomicityTest {
                                                                  f -> initial(context(f, router), fixture),
                                                                  recorder());
 
-        return new FsmBackedLeaderManager(fsm, fsm.current().ctx(), inbound(fsm.current().ctx()), fixture == Fixture.LOCAL_DORMANT);
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(fsm.current().ctx(), inbound(fsm.current().ctx()), fixture == Fixture.LOCAL_DORMANT);
     }
 
     /// The initial state is set without an `onEnter` (`Fsm#fsm`), so `Electing` arms no timer: it only gives the

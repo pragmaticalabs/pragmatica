@@ -38,6 +38,11 @@ public final class LeaderElectionFsm {
                                  LeaderElectionContext context,
                                  LeaderElectionContext.Inbound inbound) {}
 
+    /// The Fsm, its context and its one claimed Inbound: what [#machine] builds. Package-private (#3846).
+    record Machine(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
+                   LeaderElectionContext context,
+                   LeaderElectionContext.Inbound inbound) {}
+
     private LeaderElectionFsm() {}
 
     public static FsmWithContext leaderElectionFsm(NodeId self,
@@ -174,6 +179,38 @@ public final class LeaderElectionFsm {
                                                    Supplier<Boolean> consensusReadySupplier,
                                                    Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
                                                    Predicate<NodeId> leaderPingFreshFn) {
+        return withoutFsm(machine(self,
+                                  proposalHandler,
+                                  expectedCluster,
+                                  router,
+                                  proposalRetryDelay,
+                                  baseElectionDelay,
+                                  perRankDelay,
+                                  observer,
+                                  rabiaTermSupplier,
+                                  consensusReadySupplier,
+                                  currentLeaderFromKvSupplier,
+                                  leaderPingFreshFn));
+    }
+
+    private static FsmWithContext withoutFsm(Machine machine) {
+        return new FsmWithContext(machine.fsm(), machine.context(), machine.inbound());
+    }
+
+    /// The built Fsm with its context and its one claimed Inbound. Package-private: the Fsm leaves the builder's hands
+    /// only to a test of this package that builds a machine of its own (#3846).
+    static Machine machine(NodeId self,
+                           Option<LeaderProposalHandler> proposalHandler,
+                           List<NodeId> expectedCluster,
+                           MessageRouter router,
+                           TimeSpan proposalRetryDelay,
+                           TimeSpan baseElectionDelay,
+                           TimeSpan perRankDelay,
+                           FsmObserver<LeaderElectionState, ClusterFsmEvent> observer,
+                           Supplier<Long> rabiaTermSupplier,
+                           Supplier<Boolean> consensusReadySupplier,
+                           Supplier<Option<LeaderCommitted>> currentLeaderFromKvSupplier,
+                           Predicate<NodeId> leaderPingFreshFn) {
         var ctxHolder = new AtomicReference<LeaderElectionContext>();
         var timeout = LeaderElectionContext.proposalTimeoutFor(proposalRetryDelay);
         Function<Fsm<LeaderElectionState, ClusterFsmEvent>, LeaderElectionState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
@@ -192,9 +229,9 @@ public final class LeaderElectionFsm {
                                                                                                                                         leaderPingFreshFn);
         var fsm = Fsm.fsm("leader-election", self.id(), initialStateFactory, observer);
 
-        return new FsmWithContext(fsm,
-                                  ctxHolder.get(),
-                                  ctxHolder.get().claimInbound());
+        return new Machine(fsm,
+                           ctxHolder.get(),
+                           ctxHolder.get().claimInbound());
     }
 
     private static LeaderElectionState buildContextAndInitialState(AtomicReference<LeaderElectionContext> ctxHolder,

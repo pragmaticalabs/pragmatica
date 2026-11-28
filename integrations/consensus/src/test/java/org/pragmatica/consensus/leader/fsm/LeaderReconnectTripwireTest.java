@@ -110,7 +110,7 @@ class LeaderReconnectTripwireTest {
             ctx = holder.get();
             ctx.enablePreVote(LONG);
             router.addRoute(Send.class, (Consumer<Send>) _ -> sends.incrementAndGet());
-            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+            manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
             harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, seq()));
             harness.dispatch(new ConsensusReady());

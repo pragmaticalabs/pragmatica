@@ -125,7 +125,7 @@ class PeerObservationOrderTest {
                 ctx.enablePreVote(LONG);
             }
             router.addRoute(Send.class, (Consumer<Send>) _ -> sends.incrementAndGet());
-            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+            manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         }
 
         /// Node 2 following node 1 (the route `LeaderReconnectTripwireTest` takes into `Led`).
@@ -230,7 +230,7 @@ class PeerObservationOrderTest {
     @Test
     void localMode_evictionOfTheLeaderWithAnEmptyEligibleView_leavesNoLeader() {
         node = Node.following(false);
-        var local = new FsmBackedLeaderManager(node.harness.fsm(), node.ctx, inbound(node.ctx), true);
+        var local = FsmBackedLeaderManager.fsmBackedLeaderManager(node.ctx, inbound(node.ctx), true);
 
         node.ctx.installVoters(List.of(N1));
         local.peerDisconnected(new PeerDisconnected(N1, WITHOUT_N1, ObservationSource.QUIC, 2L));

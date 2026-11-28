@@ -282,7 +282,7 @@ class LeaderEpisodeHandleFenceTest {
     @Test
     void managerStop_shutsTheFsmDownThroughTheInbound() {
         start();
-        var manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+        var manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
 
         manager.stop();
         assertThat(harness.state()).as("stop() did not deliver Shutdown through the inbound").isSameAs(ctx.stopped());

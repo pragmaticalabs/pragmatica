@@ -376,7 +376,7 @@ class ViewApplicationTableTest {
                 return initial.apply(context);
             });
             ctx = holder.get();
-            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), mode == Mode.LOCAL);
+            manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), mode == Mode.LOCAL);
         }
 
         static Node startedIn(StartState start, Mode mode) {

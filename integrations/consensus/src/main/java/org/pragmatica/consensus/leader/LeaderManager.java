@@ -18,7 +18,6 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -36,7 +35,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.utility.react.ReactExecutor;
 
@@ -384,7 +382,7 @@ public interface LeaderManager {
                                                         currentLeaderFromKvSupplier,
                                                         leaderPingFreshFn);
 
-        return new FsmBackedLeaderManager(built.fsm(), built.context(), built.inbound(), proposalHandler.isEmpty());
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(built.context(), built.inbound(), proposalHandler.isEmpty());
     }
 
     /// FSM-backed implementation. `localMode=true` means no consensus; we synthesize
@@ -397,10 +395,32 @@ public interface LeaderManager {
     /// returns before its event is handled. The install-time wiring (`install*`, `enableLeaderPreVote`) and the reads
     /// (`leader`, `isLeader`, `currentLeaderEpoch`, `replaying`) are not events and stay on the caller's thread.
     /// `stop` handles every earlier event, then `Shutdown`, and rejects every later one ([LeaderElectionContext.Inbound#stop]).
-    record FsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
-                                  LeaderElectionContext context,
-                                  LeaderElectionContext.Inbound inbound,
-                                  boolean localMode) implements LeaderManager {
+    ///
+    /// The manager never holds the Fsm (#3846): it reads state through the public [LeaderElectionContext#current], and
+    /// it has no accessor for the Inbound or the mode, so a test cannot reach the node's order through it.
+    final class FsmBackedLeaderManager implements LeaderManager {
+        private final LeaderElectionContext context;
+        private final LeaderElectionContext.Inbound inbound;
+        private final boolean localMode;
+
+        private FsmBackedLeaderManager(LeaderElectionContext context,
+                                       LeaderElectionContext.Inbound inbound,
+                                       boolean localMode) {
+            this.context = context;
+            this.inbound = inbound;
+            this.localMode = localMode;
+        }
+
+        public static FsmBackedLeaderManager fsmBackedLeaderManager(LeaderElectionContext context,
+                                                                    LeaderElectionContext.Inbound inbound,
+                                                                    boolean localMode) {
+            return new FsmBackedLeaderManager(context, inbound, localMode);
+        }
+
+        public LeaderElectionContext context() {
+            return context;
+        }
+
         @Override
         public org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
             return context.installReactExecutor(executor);

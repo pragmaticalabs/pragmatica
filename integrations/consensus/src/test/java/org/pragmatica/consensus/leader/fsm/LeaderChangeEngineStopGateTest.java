@@ -97,7 +97,7 @@ class LeaderChangeEngineStopGateTest {
         var harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("leader-change-engine-stop-gate",
                                                                                     fsm -> context(fsm, router).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         manager.installReactExecutor(executor);
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
         drain();

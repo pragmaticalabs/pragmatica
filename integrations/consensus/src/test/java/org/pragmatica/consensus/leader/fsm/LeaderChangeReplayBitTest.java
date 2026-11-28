@@ -93,7 +93,7 @@ class LeaderChangeReplayBitTest {
         var harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("leader-change-replay-bit",
                                                                                     fsm -> context(fsm, router).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         manager.installReactExecutor(executor);
         manager.installReplaySource(REPLAYING::get);
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());

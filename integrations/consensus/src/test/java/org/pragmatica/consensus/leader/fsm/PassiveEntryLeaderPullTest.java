@@ -357,7 +357,7 @@ class PassiveEntryLeaderPullTest {
         harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("passive-entry-leader-pull",
                                                                                fsm -> context(fsm, router).dormant());
         ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(harness.fsm(), ctx, inbound(ctx), false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
     }
 
     private void record(LeaderChange change) {

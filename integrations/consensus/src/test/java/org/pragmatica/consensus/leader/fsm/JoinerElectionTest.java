@@ -183,7 +183,7 @@ class JoinerElectionTest {
 
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(fsmOfContext.get(), ctx, inbound(ctx), false).installVoterConfiguration(
+        LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false).installVoterConfiguration(
                 VoterConfiguration.voterConfiguration(1L, List.of(SELF, PEER)).unwrap());
 
         assertThat(h.state()).as("readmitted under a configuration without the old leader").isNotInstanceOf(LeaderElectionState.Passive.class);
@@ -252,7 +252,7 @@ class JoinerElectionTest {
     private void installThroughTheManager(Supplier<Boolean> pending) {
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(fsmOfContext.get(), ctx, inbound(ctx), false).installKvSyncProgress(pending);
+        LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false).installKvSyncProgress(pending);
     }
 
     private static void awaitNotAwaiting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) throws InterruptedException {
