@@ -109,6 +109,12 @@ class TerminationRetirementTest {
                                                  List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(value)))));
     }
 
+    /// The bound of every retirement await. An attempt that throws on a virtual thread (a retiring unit with no removal, `getFirst` of an empty
+    /// list) never completes its promise, and an unbounded `await()` turns that into a hang the suite can only kill by timeout. With the bound
+    /// the await returns a failure, so the mutant fails on the test's own assertion. A retirement here completes in milliseconds (the retries
+    /// back off 1 to 5 ms); the bound is a guess at "far more than needed, far less than a build timeout".
+    private static final TimeSpan BOUND = TimeSpan.timeSpan(2).seconds();
+
     /// One attempt only: the single-transaction behaviour, without the retry.
     private static final Retry ONE_ATTEMPT = Retry.retry()
                                                  .attempts(1)
@@ -215,7 +221,7 @@ class TerminationRetirementTest {
     void bothKeys_areRemoved_inOneTransaction() {
         leaderAndBothKeys();
 
-        retirement().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retirement().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(submitted).as("one batch").hasSize(1);
         assertThat(submitted.getFirst()).as("one transaction").hasSize(1);
@@ -261,7 +267,7 @@ class TerminationRetirementTest {
                                                                ONE_ATTEMPT,
                                                                () -> false)
                                            .retire(GONE)
-                                           .await();
+                                           .await(BOUND);
 
         assertThat(outcome.isFailure()).isTrue();
     }
@@ -278,7 +284,7 @@ class TerminationRetirementTest {
 
         beforeFirstApply = () -> seed(RECORD, readmitted);
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("the retry ended: the record is no longer the one first read").isTrue();
         assertThat(submitted).as("the refused attempt only").hasSize(1);
@@ -303,7 +309,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = () -> seed(RECORD, moved);
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(submitted).as("the refused attempt, then the attempt on the record now").hasSize(2);
         assertThat(mutationOf(submitted.getLast(), RECORD).expected()).as("the second transaction expects the record as read at that attempt").isEqualTo(Option.some(moved));
@@ -328,7 +334,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = () -> seed(RECORD, admitted);
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertAwaitingDeparture(causeOf(outcome));
         assertThat(submitted).as("the refused attempt only").hasSize(1);
@@ -341,7 +347,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = () -> seed(RECORD, moved);
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("the retry ended").isTrue();
         assertThat(submitted).as("the refused attempt only").hasSize(1);
@@ -362,7 +368,7 @@ class TerminationRetirementTest {
             seed(DIRECTIVE, reassigned);
         };
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("the retry ended").isTrue();
         assertThat(submitted).as("the refused attempt only").hasSize(1);
@@ -385,7 +391,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = this::removeTheRecord;
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(submitted).as("the refused attempt only").hasSize(1);
@@ -408,7 +414,7 @@ class TerminationRetirementTest {
             stopping.set(true);
         };
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("the retry ended on the stop").isTrue();
         assertThat(submitted).as("no attempt after the stop").hasSize(1);
@@ -427,7 +433,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = this::moveLeadership;
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(submitted).as("refused under the old leader, then retried under the new one").hasSize(2);
         assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
@@ -439,7 +445,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = this::removeBoth;
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(submitted).as("the refused attempt only: nothing left to retire").hasSize(1);
     }
@@ -521,7 +527,7 @@ class TerminationRetirementTest {
     void aRetirementRefusedPastItsBound_raisesOneOverdueWarning_andOneResolvedWarningWhenItCommits() {
         leaderAndBothKeys();
 
-        refusedFor(4).retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        refusedFor(4).retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() >= 2);
         assertThat(codesRaised()).containsExactly(OperatorWarningCode.TERMINATION_RETIREMENT_OVERDUE, OperatorWarningCode.TERMINATION_RETIREMENT_RESOLVED);
@@ -534,7 +540,7 @@ class TerminationRetirementTest {
         var readmitted = new NodeDepartureValue(DepartureState.ADMITTED, 2L, new ProcessIncarnation(2L, 0xAAL), Option.none(), 20L);
 
         afterTheLastRefusal = () -> seed(RECORD, readmitted);
-        var outcome = refusedFor(3).retire(GONE).await();
+        var outcome = refusedFor(3).retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("ended: the record was re-admitted").isTrue();
         await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.size() >= 2);
@@ -548,7 +554,7 @@ class TerminationRetirementTest {
     void aTerminalEndPastTheBound_raisesNothing() {
         leaderAndBothKeys();
 
-        var outcome = refusedFor(1, this::stopAfterTheBound).retire(GONE).await();
+        var outcome = refusedFor(1, this::stopAfterTheBound).retire(GONE).await(BOUND);
 
         assertThat(outcome.isFailure()).as("ended by the stop").isTrue();
         assertThat(clockNs.get()).as("the stop check moved the clock past the bound").isGreaterThanOrEqualTo(TimeSpan.timeSpan(2).minutes().nanos());
@@ -611,7 +617,7 @@ class TerminationRetirementTest {
     void aRetirementRefusedWithinItsBound_raisesNothing() {
         leaderAndBothKeys();
 
-        refusedFor(1).retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        refusedFor(1).retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(2)).until(warnings::isEmpty);
     }
@@ -620,7 +626,7 @@ class TerminationRetirementTest {
     void aNodeWithNeitherKey_submitsNothing() {
         commitLeader();
 
-        retirement().retire(GONE).await();
+        retirement().retire(GONE).await(BOUND);
 
         assertThat(submitted).isEmpty();
     }
@@ -631,7 +637,7 @@ class TerminationRetirementTest {
         commitLeader();
         seed(RECORD, DEPARTED);
 
-        retirement().retire(GONE).await();
+        retirement().retire(GONE).await(BOUND);
 
         assertThat(store.get(RECORD)).isEqualTo(Option.none());
     }
@@ -646,7 +652,7 @@ class TerminationRetirementTest {
     void aTermination_retiresRecordDirectiveAndReceipt_inOneTransaction() {
         leaderAndAllThreeKeys();
 
-        retirement().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retirement().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(mutatedKeysOfTheOnlyTransaction()).as("the record first, then the directive, then the receipt").containsExactly(RECORD, DIRECTIVE, RECEIPT);
         assertThat(store.get(RECORD)).isEqualTo(Option.none());
@@ -660,7 +666,7 @@ class TerminationRetirementTest {
     void aTerminationOfAnAdmittedRecord_removesNothing_andLeavesAllThree() {
         leaderAndALiveReadmittedUnit();
 
-        var outcome = retirement().retire(GONE).await();
+        var outcome = retirement().retire(GONE).await(BOUND);
 
         assertAwaitingDeparture(causeOf(outcome));
         assertThat(submitted).as("no batch").isEmpty();
@@ -674,7 +680,7 @@ class TerminationRetirementTest {
         commitLeader();
         seed(RECEIPT, RECEIPT_VALUE);
 
-        retirement().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retirement().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(mutatedKeysOfTheOnlyTransaction()).as("the receipt alone").containsExactly(RECEIPT);
         assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
@@ -689,7 +695,7 @@ class TerminationRetirementTest {
         leaderAndALiveReadmittedUnit();
         beforeAttempt.put(2, () -> seed(RECORD, DEPARTED_AT_2));
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(retirementBatches).as("the waiting attempt submits nothing: one batch in all").hasValue(1);
         assertThat(mutationOf(submitted.getFirst(), RECORD).expected()).as("the record mutation expects the DEPARTED value, never the ADMITTED one")
@@ -707,7 +713,7 @@ class TerminationRetirementTest {
         leaderAndALiveReadmittedUnit();
         beforeAttempt.put(2, () -> seed(RECORD, ADMITTED_AT_3));
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
@@ -723,7 +729,7 @@ class TerminationRetirementTest {
     void aTerminationOfALiveReadmittedNode_removesNothing_keepsWaiting_andRaisesTheOverdueEvent() {
         leaderAndALiveReadmittedUnit();
 
-        var outcome = refusedFor(0, this::stopCheckThatTakesAMinute).retire(GONE).await();
+        var outcome = refusedFor(0, this::stopCheckThatTakesAMinute).retire(GONE).await(BOUND);
 
         assertAwaitingDeparture(causeOf(outcome));
         assertThat(submitted).as("no batch").isEmpty();
@@ -749,7 +755,7 @@ class TerminationRetirementTest {
         var reassigned = ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000");
         beforeAttempt.put(1, () -> seed(DIRECTIVE, reassigned));
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
@@ -767,7 +773,7 @@ class TerminationRetirementTest {
         leaderDirectiveAndReceiptWithNoRecord();
         beforeFirstApply = () -> seed(RECORD, DEPARTED_AT_0);
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(submitted).as("the refused first batch, then the batch on the record now").hasSize(2);
         assertThat(mutationOf(submitted.getLast(), RECORD).expected()).as("the second batch expects the DEPARTED value that landed")
@@ -785,7 +791,7 @@ class TerminationRetirementTest {
         leaderDirectiveAndReceiptWithNoRecord();
         beforeAttempt.put(1, () -> seed(RECORD, DEPARTED));
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
@@ -801,7 +807,7 @@ class TerminationRetirementTest {
         leaderAndALiveReadmittedUnit();
         beforeAttempt.put(2, this::retireTheUnitThenIssueItAgain);
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
@@ -836,13 +842,36 @@ class TerminationRetirementTest {
         var reassigned = ActivationDirectiveValue.worker("east-w-0", "10.0.0.9:9000");
         beforeAttempt.put(1, () -> seed(DIRECTIVE, reassigned));
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
         assertThat(store.get(RECORD)).as("the record stands").isEqualTo(Option.some(DEPARTED_AT_2));
         assertThat(store.get(DIRECTIVE)).as("the new directive stands").isEqualTo(Option.some(reassigned));
         assertThat(store.get(RECEIPT)).as("and so does the receipt").isEqualTo(Option.some(RECEIPT_VALUE));
+        assertThat(stopChecks).hasValue(1);
+    }
+
+    /// Row 2 at an absent directive now (f3860b, the killer of mutant ru16): the record now is DEPARTED at the epoch first read, and the
+    /// directive first read is gone. The directive clause holds (an absent directive now), so the retirement REMOVEs: record and receipt in
+    /// ONE transaction, the vanished directive witnessed absent. Red when an absent directive now ENDs the retirement (the clause asked as
+    /// "equal to the one first read" only), which leaves the record and the receipt behind.
+    @Test
+    void aDirectiveThatVanishedBesideADepartedRecordAtTheEpochFirstRead_isRetired_withTheRecordAndTheReceipt_inOneTransaction() {
+        leaderAndAllThreeKeys();
+        beforeAttempt.put(1, () -> commit(new KVCommand.LeaderTransaction<>(DIRECTIVE,
+                                                                            "directive-vanished",
+                                                                            LEADER,
+                                                                            List.of(),
+                                                                            List.of(new KVCommand.Mutation<>(DIRECTIVE, store.get(DIRECTIVE), Option.none())))));
+
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
+
+        assertThat(retirementBatches).as("one batch, accepted").hasValue(1);
+        assertThat(mutatedKeysOfTheOnlyTransaction()).as("record and receipt in one transaction, the absent directive not removed").containsExactly(RECORD, RECEIPT);
+        assertThat(store.get(RECORD)).isEqualTo(Option.none());
+        assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());
+        assertThat(store.get(RECEIPT)).isEqualTo(Option.none());
         assertThat(stopChecks).hasValue(1);
     }
 
@@ -857,7 +886,7 @@ class TerminationRetirementTest {
         var unknown = new NodeDepartureValue(DepartureState.UNKNOWN, 2L, DEPARTED_AT_2.process(), Option.none(), 50L);
         beforeAttempt.put(1, () -> seed(RECORD, unknown));
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("no batch").hasValue(0);
@@ -884,7 +913,7 @@ class TerminationRetirementTest {
             seed(DIRECTIVE, reissued);
         };
 
-        var outcome = retried().retire(GONE).await();
+        var outcome = retried().retire(GONE).await(BOUND);
 
         assertThat(causeOf(outcome)).isInstanceOf(TerminationRetirement.Readmitted.class);
         assertThat(retirementBatches).as("one refused batch").hasValue(1);
@@ -900,7 +929,7 @@ class TerminationRetirementTest {
         leaderAndBothKeys();
         beforeFirstApply = () -> seed(RECEIPT, RECEIPT_VALUE);
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(retirementBatches).as("the refused batch, then the one that commits").hasValue(2);
         assertThat(store.get(RECORD)).isEqualTo(Option.none());
@@ -925,7 +954,7 @@ class TerminationRetirementTest {
             seed(RECEIPT, RECEIPT_VALUE);
         };
 
-        retried().retire(GONE).await().onFailure(cause -> fail(cause.message()));
+        retried().retire(GONE).await(BOUND).onFailure(cause -> fail(cause.message()));
 
         assertThat(retirementBatches).as("one batch, accepted").hasValue(1);
         assertThat(store.get(DIRECTIVE)).isEqualTo(Option.none());

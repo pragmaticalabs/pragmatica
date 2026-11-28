@@ -352,6 +352,38 @@ class ReceiptRetirementTest {
         assertThat(w.present(receiptKey)).as("the receipt stands").isTrue();
     }
 
+    // M5 (the stop of R-4.3.3's resubmission, the same statement as its witness: f3860b, the killer of mutant di01) — Red when: after R-4.3.3
+    // is refused because the directive came back, a second removal is derived at once from the mirror that holds that directive (the
+    // directive-absent filter of `removalDraft` dropped): the loop would resubmit against a live directive until its attempts run out.
+    // The refusal derives NOTHING while the directive exists, and exactly one removal once it is gone again.
+    @Test
+    void r433_directiveCreatedBeforeCommit_afterTheRefusal_derivesNoSecondRemoval_untilTheDirectiveIsGone() {
+        var w = directedWithReceipt();
+
+        w.h.loseKinds = Set.of(SubmitKind.CLEANUP);
+        w.h.deliver(new ClusterInput.WorkerLeave(worker));
+        w.h.drain();
+        w.h.holdKinds = Set.of(SubmitKind.DIRECTIVE_REMOVAL);
+        w.h.seedRemove(directiveKey);
+        w.h.drain();
+        var removal = w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).getLast();
+
+        w.h.seed(directiveKey, Fixtures.worker("c1"));
+        w.h.drain();
+        var verdict = w.h.applyHeld(removal.correlationId());
+
+        assertThat(verdict).as("precondition: the directive that came back refuses R-4.3.3").isInstanceOf(Settlement.Refused.class);
+        w.h.settleHeld(removal, verdict);
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).getLast()).as("no second removal is derived while the directive exists").isSameAs(removal);
+
+        w.h.seedRemove(directiveKey);
+        w.h.drain();
+        var next = w.h.submits(SubmitKind.DIRECTIVE_REMOVAL);
+
+        assertThat(next).as("one removal follows the directive's removal").hasSize(2);
+        assertThat(removesAt(next.getLast(), recordKey, recordNow(w))).as("and it retires the record at its exact value").isTrue();
+    }
+
     /// A worker with a directive and no receipt whose C17b is held; then a receipt is committed (the directive was issued again, or a late
     /// write landed). Returns the held C17b.
     private ClusterEffect.Submit c17bHeldThenAReceiptCommits(MbWorld w) {
@@ -411,14 +443,8 @@ class ReceiptRetirementTest {
                   .isTrue();
     }
 
-    // M4 pin (the record witness of the guarding form) — Red when: a C17b of a CORE (rows only, never the record) is no longer guarded by the
-    // record it was derived from, so it removes the rows of a process that was admitted over that record meanwhile (W3'). Green at the base:
-    // it pins behaviour that is kept.
-    @Test
-    void coreCleanup_recordMovedBeforeCommit_refusesTheCleanup() {
-        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
-        var rowKey = new SliceObservedKey(CORE_2, ORDERS);
-
+    /// Three cores, the departed CORE_2 with an observed row, and the sweep's C17b for it held (not applied): the guarding form, rows only.
+    private ClusterEffect.Submit heldCoreCleanup(MbWorld w, SliceObservedKey rowKey) {
         w.admit(CORE_1, 0x1111L);
         w.admit(CORE_2, TOKEN_2);
         w.admit(CORE_3, 0x3333L);
@@ -427,9 +453,12 @@ class ReceiptRetirementTest {
         w.h.policy = FsmHarness.SettlePolicy.HOLD;
         w.activate();
         settle(w);
-        var cleanup = w.h.submits(SubmitKind.CLEANUP).getLast();
 
-        assertThat(removes(cleanup, rowKey)).as("precondition: the C17b removes the departed core's row").isTrue();
+        return w.h.submits(SubmitKind.CLEANUP).getLast();
+    }
+
+    /// The record of CORE_2 is admitted again, as another process, after the held C17b was derived.
+    private void core2IsAdmittedAgain(MbWorld w) {
         w.h.seed(new NodeDepartureKey(CORE_2),
                  new NodeDepartureValue(DepartureState.ADMITTED,
                                         2L,
@@ -437,10 +466,44 @@ class ReceiptRetirementTest {
                                         Option.none(),
                                         FsmHarness.START_WALL));
         w.h.drain();
+    }
+
+    // M4 pin (the record witness of the guarding form) — Red when: a C17b of a CORE (rows only, never the record) is no longer guarded by the
+    // record it was derived from, so it removes the rows of a process that was admitted over that record meanwhile (W3'). Green at the base:
+    // it pins behaviour that is kept.
+    @Test
+    void coreCleanup_recordMovedBeforeCommit_refusesTheCleanup() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+        var rowKey = new SliceObservedKey(CORE_2, ORDERS);
+        var cleanup = heldCoreCleanup(w, rowKey);
+
+        assertThat(removes(cleanup, rowKey)).as("precondition: the C17b removes the departed core's row").isTrue();
+        core2IsAdmittedAgain(w);
         var verdict = w.h.applyHeld(cleanup.correlationId());
 
         assertThat(verdict).as("the moved record refuses the C17b").isInstanceOf(Settlement.Refused.class);
         assertThat(w.present(rowKey)).as("the row of the re-admitted process stands").isTrue();
+    }
+
+    // M4 pin, the resubmission (f3860b, the killer of mutants ru30 and df09) — Red when: a refused C17b whose record moved is resubmitted
+    // (`recordUnchanged` always true, or `resubmitIfUnchanged` not asking it): the resubmission would carry the departed core's row against
+    // the process admitted over its record. The refused C17b is settled, and no C17b follows: the record is ADMITTED, so no sweep derives one
+    // either. The record that moved stands, and so does the row.
+    @Test
+    void coreCleanup_recordMovedBeforeCommit_isNotResubmitted_andTheMovedRecordStands() {
+        var w = MbWorld.world(CORE_1, CORE_2, CORE_3);
+        var rowKey = new SliceObservedKey(CORE_2, ORDERS);
+        var cleanup = heldCoreCleanup(w, rowKey);
+
+        core2IsAdmittedAgain(w);
+        var moved = w.stored(new NodeDepartureKey(CORE_2));
+        var verdict = w.h.applyHeld(cleanup.correlationId());
+
+        assertThat(verdict).as("precondition: the moved record refuses the C17b").isInstanceOf(Settlement.Refused.class);
+        w.h.settleHeld(cleanup, verdict);
+        assertThat(cleanupsAfter(w, cleanup)).as("no C17b follows the refusal: a refused cleanup whose record moved is not resubmitted").isEmpty();
+        assertThat(w.stored(new NodeDepartureKey(CORE_2))).as("the moved record stands").isEqualTo(moved);
+        assertThat(w.present(rowKey)).as("and so does the row").isTrue();
     }
 
     // -- G4: a refused R3 unit is resubmitted at once ------------------------------------------------------------------
