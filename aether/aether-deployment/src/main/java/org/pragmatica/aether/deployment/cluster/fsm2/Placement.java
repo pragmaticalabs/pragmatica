@@ -156,7 +156,7 @@ public sealed interface Placement {
     /// transactions on every deploy). The event waits for the first sample taken after the `Rebuild` (`sampledAfterRebuild`, the same
     /// bar `Joins.listedOrAlive` sets for `localAlive`); `Lifecycle.onSeams` requests the pass that sample unlocks.
     private static ClusterModel emptyAudience(ClusterModel m, Ctx ctx, ArtifactBase base, PlacementPolicy policy) {
-        return !m.sampledAfterRebuild || activationInFlight(m, ctx, policy)
+        return ! m.sampledAfterRebuild || activationInFlight(m, ctx, policy)
                ? m
                : Warnings.raise(m,
                                 Warnings.EMPTY_AUDIENCE,

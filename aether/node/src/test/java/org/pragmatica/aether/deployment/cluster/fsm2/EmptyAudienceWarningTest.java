@@ -42,7 +42,7 @@ class EmptyAudienceWarningTest {
         }
 
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(workers[0], false, workers));
-        w.activate();
+        w.activateSampled();
 
         return w;
     }
@@ -209,9 +209,45 @@ class EmptyAudienceWarningTest {
         w.h.loseKinds = lose;
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
-        w.activate();
+        w.activateSampled();
 
         return w;
+    }
+
+    /// Red when: a pass on the `Rebuild` snapshot, before any seam sample, tells an empty audience (#3870): on a clean deploy the readiness view
+    /// does not exist yet at that pass, so the event would open and close inside one startup window on every deploy (two `WARNINGS`
+    /// transactions, a false signal).
+    @Test
+    void coreOnly_beforeTheFirstSample_raisesNothing_andReadyArrivingWithTheSampleRaisesNothingEver() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "CORE_ONLY")
+                       .seams(seams -> seams.withReady(Set.of()))
+                       .activate();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).as("the Rebuild snapshot is not a reading of the audience").isEmpty();
+        w.refreshSeams(seams -> seams.withReady(Set.of(CORE_1, CORE_2, CORE_3)));
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).isEmpty();
+        assertThat(w.h.warns(CLOSE)).as("nothing opened, so nothing closes").isEmpty();
+        assertThat(w.h.submits(ClusterModel.SubmitKind.WARNINGS)).as("no WARNINGS transaction on a clean start").isEmpty();
+        assertThat(hosts(w.h, ORDERS)).hasSize(1);
+    }
+
+    /// Red when: the audience that is still empty at the first sample stays silent, or waits for a later tick instead of the pass the
+    /// first sample requests (#3870: the held pass is re-run by the flag flip, never lost).
+    @Test
+    void coreOnly_firstSampleLeavesItEmpty_raisesOnThePassThatSampleRequests() {
+        var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
+                       .target(ORDERS, 1, "CORE_ONLY")
+                       .seams(seams -> seams.withReady(Set.of()))
+                       .activate();
+
+        w.h.deliver(new ClusterInput.Reconcile());
+        assertThat(w.h.warns(OPEN)).isEmpty();
+        w.refreshSeams(seams -> seams);
+        assertThat(w.h.warns(OPEN)).hasSize(1);
     }
 
     /// Red when: a policy other than WORKERS_ONLY that computes an empty audience (CORE_ONLY with no ready core) stays silent: the one
@@ -221,7 +257,7 @@ class EmptyAudienceWarningTest {
         var w = MbWorld.worldWithFloor(3, CORE_1, CORE_2, CORE_3)
                        .target(ORDERS, 1, "CORE_ONLY")
                        .seams(seams -> seams.withReady(Set.of()))
-                       .activate();
+                       .activateSampled();
 
         w.h.deliver(new ClusterInput.Reconcile());
         w.h.deliver(new ClusterInput.Reconcile());
@@ -242,7 +278,7 @@ class EmptyAudienceWarningTest {
         w.h.holdKinds = Set.of(ClusterModel.SubmitKind.COMMUNITY);
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
-        w.activate();
+        w.activateSampled();
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).hasSize(1);
     }
@@ -304,7 +340,7 @@ class EmptyAudienceWarningTest {
 
         w.directive(W1, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1));
-        w.activate();
+        w.activateSampled();
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN).getFirst().message())
             .contains("(3 eligible cores; communities: east-w-0 FORMING with 1 live, east-w-1 FORMING with 0 live).");
@@ -338,7 +374,7 @@ class EmptyAudienceWarningTest {
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
-        w.activate();
+        w.activateSampled();
         w.h.deliver(new ClusterInput.Reconcile());
         assertThat(w.h.warns(OPEN)).as("ACTIVE with the floor met: nothing is in flight, the empty audience is told").hasSize(1);
     }
@@ -352,7 +388,7 @@ class EmptyAudienceWarningTest {
 
         w.directive(W1, worker("east-w-0")).directive(W2, worker("east-w-0")).directive(W3, worker("east-w-0"));
         w.h.seedQuietly(new GovernorAnnouncementKey("east-w-0"), roster(W1, false, W1, W2, W3));
-        w.activate();
+        w.activateSampled();
 
         return w;
     }

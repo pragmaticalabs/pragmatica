@@ -203,7 +203,7 @@ public sealed interface Lifecycle {
         Liveness.refresh(m, ctx);
         Absence.refreshAll(m, ctx);
         if (firstSample || !before.countedCores().equals(seams.countedCores()) || !before.ready().equals(seams.ready()) || !before.draining()
-                                                                                                                   .equals(seams.draining())) {
+                                                                                                                                  .equals(seams.draining())) {
             Reconcile.request(m, ctx);
         }
 

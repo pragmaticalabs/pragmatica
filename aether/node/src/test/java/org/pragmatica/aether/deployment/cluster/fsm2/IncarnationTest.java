@@ -128,7 +128,7 @@ class IncarnationTest {
         w.admit(CORE_1, 0x1111L);
         w.admit(W1, 0L);
         w.community(C, 10, CommunityState.ACTIVE).directive(W1, Fixtures.worker(C)).target(ORDERS, 1, "WORKERS_ONLY");
-        w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1).activate();
+        w.instance(W1, ORDERS, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(7), P1).activateSampled();
         w.h.advance(100_000L);
         assertThat(w.tokens.tokenOf(W1)).as("the real registry knows nothing").isZero();
         assertThat(Rows.activeCount(w.h.model(), ORDERS)).isEqualTo(1);

@@ -73,10 +73,18 @@ class Fsm2DeployE01Test {
     private static final int SLICES = 1;
     /// Design 7.1 as restated by P3-G: the leader's clean deploy takes 4 applies plus drain splits, each node 4 rounds per instance.
     private static final double SPEC_LEADER_FLOOR = 4;
-    private static final double SPEC_LEADER_TRANSACTIONS = 2 + 2 * SLICES * NODES;
+    /// Design 7.1's own count: one TARGETS, one GOALS per instance twice over, one SUCCEEDED.
+    private static final double SPEC_CORE_TRANSACTIONS = 2 + 2 * SLICES * NODES;
+    /// 7.1 amended for #3389/#3836: each blueprint whose slices declare routes adds the declared-route pair, one ROUTES transaction that
+    /// DECLAREs the rows and one that PUBLISHes them once a node reports them, two however many routes are declared. The echo slice declares
+    /// routes (`routes.toml`: health, echo), so this blueprint carries them. A third ROUTES transaction on a clean deploy is a regression.
+    private static final int BLUEPRINTS_WITH_DECLARED_ROUTES = 1;
+    private static final double SPEC_ROUTE_TRANSACTIONS = 2 * BLUEPRINTS_WITH_DECLARED_ROUTES;
+    private static final double SPEC_LEADER_TRANSACTIONS = SPEC_CORE_TRANSACTIONS + SPEC_ROUTE_TRANSACTIONS;
     private static final double SPEC_NODE_ROUNDS = NODES * 4;
-    /// The submission kinds design 7.1 counts for a clean deploy (ClusterModel.SubmitKind names).
-    private static final Set<String> SPEC_KINDS = Set.of("TARGETS", "GOALS", "SUCCEEDED");
+    /// The submission kinds design 7.1 counts for a clean deploy (ClusterModel.SubmitKind names), and ROUTES as amended (#3836).
+    private static final Set<String> CORE_KINDS = Set.of("TARGETS", "GOALS", "SUCCEEDED");
+    private static final Set<String> SPEC_KINDS = Set.of("TARGETS", "GOALS", "SUCCEEDED", "ROUTES");
     private static final String EXPECTED_WARNS = "/fsm2/expected-warns-e01.txt";
 
     private final HttpOperations http = jdkHttpOperations();
@@ -136,13 +144,13 @@ class Fsm2DeployE01Test {
                   .isEmpty();
     }
 
-    /// 7.1 as restated by P3-G, the leader's assertion: exactly `2 + 2·S·I` transactions (a duplicate target batch makes it one more), and
+    /// 7.1 as restated by P3-G and amended for the declared-route pair (#3836): exactly `2 + 2·S·I + 2` transactions (a duplicate target batch makes it one more), and
     /// at least the 4 causal applies. Drain splits are timing-dependent and measured (O4, P3-H), not bounded here. Enabled at P3-G on 11 of 11 runs.
     @Test
     void leaderRounds_withinTheSpecBudget() {
         deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
                    BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
-        assertThat(submitted("cluster")).as("design 7.1: leader, clean deploy, 2 + 2*S*I transactions")
+        assertThat(submitted("cluster")).as("design 7.1 (+2 declared routes, #3836): leader, clean deploy, 2 + 2*S*I + 2 transactions")
                   .isEqualTo(SPEC_LEADER_TRANSACTIONS);
         assertThat(leaderApplies()).as("design 7.1: leader, clean deploy, at least the 4 causal stages")
                   .isGreaterThanOrEqualTo(SPEC_LEADER_FLOOR);
@@ -151,20 +159,32 @@ class Fsm2DeployE01Test {
     /// #3870 control: the three kinds 7.1 counts (one TARGETS, one GOALS per instance twice over, one SUCCEEDED) still total `2 + 2*S*I`.
     /// Green at 7b1b881082 and at 9b25af3f33: the red of [#leaderRounds_withinTheSpecBudget] is not a change in the counted kinds.
     @Test
-    void leaderTransactions_ofTheSpecKinds_areTheSpecBudget() {
+    void leaderTransactions_ofTheCoreKinds_areTheCoreBudget() {
         deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
                    BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
         var byKind = submittedByKind();
-        var counted = SPEC_KINDS.stream().mapToDouble(kind -> byKind.getOrDefault(kind, 0.0)).sum();
+        var counted = CORE_KINDS.stream().mapToDouble(kind -> byKind.getOrDefault(kind, 0.0)).sum();
 
         assertThat(counted).as("design 7.1: TARGETS + GOALS + SUCCEEDED transactions of a clean deploy, by kind: " + byKind)
-                  .isEqualTo(SPEC_LEADER_TRANSACTIONS);
+                  .isEqualTo(SPEC_CORE_TRANSACTIONS);
     }
 
-    /// #3870, red first: a clean deploy's leader submits no transaction of a kind outside the 7.1 budget. At 9b25af3f33 it submits ROUTES x2
-    /// (#3836, def6eef995: the declared-route DECLARE and PUBLISH of the slice's routes) and WARNINGS x2 (#3852, 3836797a19: the
-    /// `placement-audience-empty` open at the first placement pass, CORE_ONLY with no core yet visible, and its `placement-audience-available` close).
-    /// The fix lane decides per kind: amend 7.1 to count the kind, or stop the transaction. Either turns this green.
+    /// #3870 ruling 1, the declared-route pair: a clean deploy of a blueprint whose slices declare routes submits exactly two ROUTES
+    /// transactions, DECLARE and PUBLISH (#3836, def6eef995). Red on a third (a re-declare or a repeated publish on a clean deploy), and on
+    /// none (the routes were never declared).
+    @Test
+    void leaderTransactions_ofDeclaredRoutes_areTheDeclarePublishPair() {
+        deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
+                   BlueprintId.blueprintId(BLUEPRINT_ID).unwrap());
+        var byKind = submittedByKind();
+
+        assertThat(byKind.getOrDefault("ROUTES", 0.0)).as("ROUTES transactions of a clean deploy, by kind: " + byKind)
+                  .isEqualTo(SPEC_ROUTE_TRANSACTIONS);
+    }
+
+    /// #3870: a clean deploy's leader submits no transaction of a kind outside the amended 7.1 budget. WARNINGS in particular: a clean
+    /// deploy raises no operator warning (at 9b25af3f33 it submitted WARNINGS x2, `placement-audience-empty` and its
+    /// `placement-audience-available` close, from a pass on the `Rebuild` snapshot, before the readiness view had a sample).
     @Test
     void leaderTransactions_noKindOutsideTheSpec() {
         deployOnce(Artifact.artifact(TestArtifacts.ECHO_SLICE).unwrap(),
@@ -172,7 +192,7 @@ class Fsm2DeployE01Test {
         var outside = new TreeMap<>(submittedByKind());
 
         outside.keySet().removeAll(SPEC_KINDS);
-        assertThat(outside).as("design 7.1: leader transactions of a kind outside TARGETS/GOALS/SUCCEEDED, clean deploy")
+        assertThat(outside).as("design 7.1: leader transactions of a kind outside TARGETS/GOALS/SUCCEEDED/ROUTES, clean deploy")
                   .isEmpty();
     }
 
