@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -20,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// only after that task ran: when the drainer is idle it runs inline; when a timer task holds the drainer the task is
 /// queued behind it, and the call waits (bounded, never a sleep) for the completion the task sets, so the next
 /// assertion of the test never runs ahead of the event (#3605 v3605j row 50). `harness.dispatch(...)` from a test
-/// thread is off the drainer: a handler that reaches `dispatchSelf` would be refused.
+/// thread is off the drainer: a handler that reaches `EpisodeHandle#dispatch` would be refused.
 final class OnDrainer {
     private static final long HANDLED_WITHIN_SECONDS = 10;
 
@@ -33,7 +35,7 @@ final class OnDrainer {
     }
 
     static void dispatch(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        run(ctx, () -> ctx.submit(event));
+        run(ctx, () -> inbound(ctx).submit(event));
     }
 
     /// Runs `task` as ONE task on the node's serial executor and returns after it ran: several steps that production
@@ -41,7 +43,7 @@ final class OnDrainer {
     static void run(LeaderElectionContext ctx, Runnable task) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(() -> runThenComplete(task, handled));
+        inbound(ctx).serially(() -> runThenComplete(task, handled));
         awaitHandled(handled);
     }
 
@@ -51,7 +53,7 @@ final class OnDrainer {
     static void drained(LeaderElectionContext ctx) {
         var handled = new CountDownLatch(1);
 
-        ctx.serially(handled::countDown);
+        inbound(ctx).serially(handled::countDown);
         awaitHandled(handled);
     }
 

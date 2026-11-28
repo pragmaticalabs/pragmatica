@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -95,7 +97,7 @@ class LeaderChangeEngineStopGateTest {
         var harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("leader-change-engine-stop-gate",
                                                                                     fsm -> context(fsm, router).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         manager.installReactExecutor(executor);
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
         drain();

@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
@@ -51,6 +53,7 @@ class JoinerElectionTest {
 
     private final AtomicInteger proposals = new AtomicInteger();
     private final AtomicReference<LeaderElectionContext> context = new AtomicReference<>();
+    private final AtomicReference<org.pragmatica.statemachine.Fsm<LeaderElectionState, ClusterFsmEvent>> fsmOfContext = new AtomicReference<>();
 
     private FsmTestHarness<LeaderElectionState, ClusterFsmEvent> harness(Option<NodeId> kvLeader, TimeSpan grace) {
         return harness(() -> kvLeader, grace);
@@ -90,6 +93,7 @@ class JoinerElectionTest {
                                             grace);
 
         context.set(ctx);
+        fsmOfContext.set(fsm);
 
         return ctx.dormant();
     }
@@ -98,12 +102,12 @@ class JoinerElectionTest {
     /// leader), then admitted as a voter, then consensus ready. The transport links the leader first: a passive
     /// observer adopts only a committed leader in its stored view (#3581).
     private void joinAsObserverThenVoter(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) {
-        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
-        h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new PassiveDirectory(List.of(LEADER, PEER)));
         commitLeader(h, LEADER, 1L);
         context.get().installVoters(ELECTORATE);
-        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
-        h.dispatch(new VoterReadmitted());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new VoterReadmitted());
     }
 
     @Test
@@ -118,7 +122,7 @@ class JoinerElectionTest {
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(LEADER);
         assertThat(proposals.get()).as("a joiner with a live committed leader never proposes").isZero();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -130,7 +134,7 @@ class JoinerElectionTest {
         assertThat(h.state()).as("the observed leader is followed on entry, not after the grace").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(LEADER);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -138,18 +142,18 @@ class JoinerElectionTest {
         var kvLeader = new AtomicReference<Option<NodeId>>(Option.none());
         var h = harness(kvLeader::get, LONG);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
-        h.dispatch(new LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new LeaderElectionEvents.ConsensusReady());
         assertThat(h.state()).as("precondition: waiting, nothing visible").isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
         kvLeader.set(Option.some(LEADER));
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
 
         assertThat(h.state()).as("the timeout reads KV again and follows the leader instead of electing").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(proposals.get()).isZero();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -157,12 +161,12 @@ class JoinerElectionTest {
         var h = harness(Option.some(LEADER), LONG);
 
         joinAsObserverThenVoter(h);
-        h.dispatch(new KvSyncGraceTimeout());
+        OnDrainer.dispatch(h, new KvSyncGraceTimeout());
 
         assertThat(h.state()).as("the grace timeout must not depose a live committed leader").isInstanceOf(LeaderElectionState.Led.class);
         assertThat(proposals.get()).isZero();
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// A leader observed while passive but voted OUT of the configuration that readmits this node is not an eligible
@@ -172,14 +176,14 @@ class JoinerElectionTest {
         var h = harness(Option.none(), LONG);
 
         // A passive observer adopts only a committed leader in its stored view (#3581): the transport links it first.
-        h.dispatch(new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
-        h.dispatch(new PassiveDirectory(List.of(LEADER, PEER)));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(LEADER, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new PassiveDirectory(List.of(LEADER, PEER)));
         commitLeader(h, LEADER, 1L);
         assertThat(context.get().currentLeader()).as("precondition: observed while passive").isEqualTo(Option.some(LEADER));
 
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installVoterConfiguration(
+        LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false).installVoterConfiguration(
                 VoterConfiguration.voterConfiguration(1L, List.of(SELF, PEER)).unwrap());
 
         assertThat(h.state()).as("readmitted under a configuration without the old leader").isNotInstanceOf(LeaderElectionState.Passive.class);
@@ -187,22 +191,22 @@ class JoinerElectionTest {
             assertThat(led.leader()).as("must not follow a leader excluded from the installed electorate").isNotEqualTo(LEADER);
         }
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
     void awaitingKvSync_leaderlessJoiner_stillElectsAfterGrace() throws InterruptedException {
         var h = harness(Option.none(), SHORT_GRACE);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
-        h.dispatch(new LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new LeaderElectionEvents.ConsensusReady());
         awaitNotAwaiting(h);
 
         assertThat(h.state()).as("a genuinely leaderless cluster still lets the joiner elect")
                              .isInstanceOfAny(LeaderElectionState.Electing.class, LeaderElectionState.ReElecting.class);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -211,9 +215,9 @@ class JoinerElectionTest {
         var h = harness(Option.none(), SHORT_GRACE);
 
         installThroughTheManager(catchingUp::get);
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
-        h.dispatch(new LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new LeaderElectionEvents.ConsensusReady());
         TimeUnit.MILLISECONDS.sleep(450);
 
         assertThat(h.state()).as("sync progress still pending: wait, do not elect on the wall clock")
@@ -225,7 +229,7 @@ class JoinerElectionTest {
         assertThat(h.state()).as("sync caught up and no leader appeared: the cluster is leaderless, elect")
                              .isInstanceOfAny(LeaderElectionState.Electing.class, LeaderElectionState.ReElecting.class);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -233,22 +237,22 @@ class JoinerElectionTest {
         var h = harness(Option.none(), SHORT_GRACE);
 
         context.get().installKvSyncPending(() -> true);
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
-        h.dispatch(new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
-        h.dispatch(new LeaderElectionEvents.ConsensusReady());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(SELF, ELECTORATE, seq()));
+        OnDrainer.dispatch(h, new LeaderElectionEvents.ConsensusReady());
         awaitNotAwaiting(h);
 
         assertThat(h.state()).as("a wedged sync signal can delay an election, never forbid it")
                              .isInstanceOfAny(LeaderElectionState.Electing.class, LeaderElectionState.ReElecting.class);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// The production route: the consensus wiring hands the signal to the `LeaderManager`, which owns the context.
     private void installThroughTheManager(Supplier<Boolean> pending) {
         var ctx = context.get();
 
-        new LeaderManager.FsmBackedLeaderManager(ctx.fsm(), ctx, false).installKvSyncProgress(pending);
+        LeaderManager.FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false).installKvSyncProgress(pending);
     }
 
     private static void awaitNotAwaiting(FsmTestHarness<LeaderElectionState, ClusterFsmEvent> h) throws InterruptedException {

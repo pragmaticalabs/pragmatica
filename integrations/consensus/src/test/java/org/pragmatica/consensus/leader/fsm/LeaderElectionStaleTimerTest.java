@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 import static org.pragmatica.consensus.leader.fsm.LeaderCommits.commitLeaderOnDrainer;
 import static org.pragmatica.consensus.fsm.Observations.seq;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -154,6 +155,8 @@ class LeaderElectionStaleTimerTest {
         // invokes target.onCasLost(), which must cancel the eagerly-scheduled tick.
         var ctx = ((LeaderElectionState.QuorumLost) h.state()).ctx();
         var freshElecting = LeaderElectionState.Electing.fresh(ctx);
+        // The tick is armed by the entry hook (#3846 round 2), never by construction.
+        freshElecting.onEntry(ownerLifetime());
         var pendingTick = freshElecting.tickFuture().get();
         assertThat((Object) pendingTick).isNotNull();
         assertThat(pendingTick.isCancelled()).isFalse();
@@ -183,6 +186,7 @@ class LeaderElectionStaleTimerTest {
 
         var ctx = ((LeaderElectionState.QuorumLost) h.state()).ctx();
         var freshReElecting = LeaderElectionState.ReElecting.fresh(ctx);
+        freshReElecting.onEntry(ownerLifetime());
         var pendingTick = freshReElecting.tickFuture().get();
         assertThat((Object) pendingTick).isNotNull();
         assertThat(pendingTick.isCancelled()).isFalse();

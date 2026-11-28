@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -161,7 +163,7 @@ class LeaderPreVoteTest {
 
             router.addRoute(Send.class, (Consumer<Send>) send -> route(id, send));
 
-            return new Node(id, harness, ctx, new FsmBackedLeaderManager(harness.fsm(), ctx, false), proposals);
+            return new Node(id, harness, ctx, FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false), proposals);
         }
 
         private void wire(Node node) {

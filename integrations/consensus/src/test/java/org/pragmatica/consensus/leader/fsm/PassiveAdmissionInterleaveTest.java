@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.RepeatedTest;
 import org.pragmatica.consensus.NodeId;
@@ -148,7 +150,7 @@ class PassiveAdmissionInterleaveTest {
                                                                                                   router,
                                                                                                   kvLeader).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        var manager = new FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        var manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
 
         manager.installPassiveCoreDirectory(CORES);
         manager.peerJoined(new PeerJoined(LEADER, List.of(SELF, LEADER, OTHER), ObservationSource.QUIC, 1));

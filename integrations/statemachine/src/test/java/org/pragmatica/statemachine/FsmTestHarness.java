@@ -53,6 +53,13 @@ public final class FsmTestHarness<S extends FsmState<S, E>, E> {
         fsm.dispatch(event);
     }
 
+    /// Leaves `saved` and enters it again as one transition: the shape a handler takes when it requests a transition to
+    /// a state record it kept (no production handler does today, #3846). The new entry has its own lifetime and the old
+    /// entry's lifetime has ended, though the record reference is the same.
+    public boolean reenter(S saved) {
+        return fsm.tryAdvance(saved, saved, () -> {});
+    }
+
     /// Dispatch multiple events concurrently to exercise CAS contention. Returns after all
     /// dispatching threads have completed.
     public void dispatchConcurrently(List<E> events) throws InterruptedException {

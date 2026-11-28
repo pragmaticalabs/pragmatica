@@ -19,6 +19,7 @@ import org.pragmatica.statemachine.FsmTestHarness;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// Verifies Fix A: `QuorumWaiting` is now a data-carrying record that periodically re-queries
@@ -108,7 +109,7 @@ class QuorumWaitingPeriodicRecheckTest {
         var ready = new AtomicBoolean(true);
         var h = buildHarness(ready);
 
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
 
         // Synchronous dispatch path — we should already be in AwaitingKvSync, having passed
         // through QuorumWaiting in a single dispatch tick. The cold-boot self-proposal gate
@@ -120,7 +121,7 @@ class QuorumWaitingPeriodicRecheckTest {
                 .isInstanceOf(LeaderElectionState.AwaitingKvSync.class);
 
         // Cleanup.
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     @Test
@@ -157,7 +158,7 @@ class QuorumWaitingPeriodicRecheckTest {
         var ctx = ((LeaderElectionState.Dormant) h.state()).ctx();
         var freshQuorumWaiting = LeaderElectionState.QuorumWaiting.fresh(ctx);
         // Fresh record — invoke onEntry to schedule the poll.
-        freshQuorumWaiting.onEntry();
+        freshQuorumWaiting.onEntry(ownerLifetime());
         var pollFuture = freshQuorumWaiting.pollFuture().get();
         assertThat((Object) pollFuture).as("poll future scheduled on entry").isNotNull();
         assertThat(pollFuture.isCancelled()).isFalse();

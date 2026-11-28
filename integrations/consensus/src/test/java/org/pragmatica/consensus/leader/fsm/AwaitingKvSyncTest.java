@@ -124,15 +124,15 @@ class AwaitingKvSyncTest {
         // the synthesized LeaderCommitted event. (The harness's `consensusReadySupplier`
         // returns true → entering QuorumWaiting auto-dispatches ConsensusReady → enters
         // AwaitingKvSync — so we must seed topology in Dormant first.)
-        h.dispatch(new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
-        h.dispatch(new ClusterFsmEvent.QuorumEstablished());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.NodeAdded(PEER_A, List.of(SELF, PEER_A, PEER_B), seq()));
+        OnDrainer.dispatch(h, new ClusterFsmEvent.QuorumEstablished());
 
         // Synchronous: AwaitingKvSync.onEntry → adoptLeaderFromKvIfPresent → LeaderCommitted →
         // Led(PEER_A) all within a single dispatch tick.
         assertThat(h.state()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(((LeaderElectionState.Led) h.state()).leader()).isEqualTo(PEER_A);
 
-        h.dispatch(new ClusterFsmEvent.Shutdown());
+        OnDrainer.dispatch(h, new ClusterFsmEvent.Shutdown());
     }
 
     /// Genuinely fresh cluster: no peer commits a leader during the grace window. The FSM

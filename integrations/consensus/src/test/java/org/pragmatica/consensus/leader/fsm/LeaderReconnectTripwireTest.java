@@ -10,6 +10,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -108,7 +110,7 @@ class LeaderReconnectTripwireTest {
             ctx = holder.get();
             ctx.enablePreVote(LONG);
             router.addRoute(Send.class, (Consumer<Send>) _ -> sends.incrementAndGet());
-            manager = new FsmBackedLeaderManager(harness.fsm(), ctx, false);
+            manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
             harness.dispatch(new ClusterFsmEvent.QuorumEstablished());
             harness.dispatch(new ClusterFsmEvent.NodeAdded(N2, ALL, seq()));
             harness.dispatch(new ConsensusReady());

@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -357,9 +359,9 @@ class LeaderStaleTickEpisodeTest {
 
     /// Runs on the drainer: the state is left and entered again, as one serial task.
     private void reenterAwaitingKvSync() {
-        ctx.submit(new ClusterFsmEvent.QuorumDisappeared());
-        ctx.submit(new ClusterFsmEvent.QuorumEstablished());
-        reentered.set(ctx.fsm().current());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumDisappeared());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumEstablished());
+        reentered.set(ctx.current());
     }
 
     private void reenterAwaitingKvSyncWithTheSyncEnded() {
@@ -368,16 +370,16 @@ class LeaderStaleTickEpisodeTest {
     }
 
     private void reenterQuorumWaitingThenReady() {
-        ctx.submit(new ClusterFsmEvent.QuorumDisappeared());
-        ctx.submit(new ClusterFsmEvent.QuorumEstablished());
-        reentered.set(ctx.fsm().current());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumDisappeared());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumEstablished());
+        reentered.set(ctx.current());
         consensusReady.set(true);
     }
 
     private void reenterElection(boolean reElecting) {
         reenterAwaitingKvSync();
-        ctx.submit(new KvSyncGraceTimeout());
-        reentered.set(ctx.fsm().current());
+        inbound(ctx).submit(new KvSyncGraceTimeout());
+        reentered.set(ctx.current());
         assertThat(reentered.get()).isInstanceOf(reElecting
                                                  ? LeaderElectionState.ReElecting.class
                                                  : LeaderElectionState.Electing.class);
@@ -391,15 +393,15 @@ class LeaderStaleTickEpisodeTest {
 
     private void reenterElectionProposing() {
         reenterElection(false);
-        ctx.submit(new ElectionTick());
+        inbound(ctx).submit(new ElectionTick());
         captured.set(((LeaderElectionState.Electing) reentered.get()).tickFuture().get());
     }
 
     private void reenterLedAfterOneSilenceShortOfTheThreshold() {
-        ctx.submit(new ClusterFsmEvent.QuorumDisappeared());
-        ctx.submit(new ClusterFsmEvent.QuorumEstablished());
-        LeaderCommits.commitLeader(ctx, ctx::submit, PEER, 2L);
-        reentered.set(ctx.fsm().current());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumDisappeared());
+        inbound(ctx).submit(new ClusterFsmEvent.QuorumEstablished());
+        LeaderCommits.commitLeader(ctx, event -> inbound(ctx).submit(event), PEER, 2L);
+        reentered.set(ctx.current());
         assertThat(reentered.get()).isInstanceOf(LeaderElectionState.Led.class);
     }
 
@@ -417,7 +419,7 @@ class LeaderStaleTickEpisodeTest {
             tenureOne.consecutiveSilentChecks().set(LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS - 1);
         }
 
-        ctx.serially(exitAndReenter);
+        inbound(ctx).serially(exitAndReenter);
         Awaitility.await("instrument: the old episode's timer fired behind the exit task")
                   .atMost(WITHIN)
                   .until(() -> ctx.pendingSerialTasksForTest() >= 2);

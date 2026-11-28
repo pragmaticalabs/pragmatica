@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -64,7 +66,7 @@ class LeaderHookFollowUpTest {
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
         held.release();
         assertThat(manager.context().currentTopology()).as("instrument: SELF in the stored view").contains(SELF);
-        assertThat(manager.context().fsm().current()).as("a leader re-admitted after its loss is kept")
+        assertThat(manager.context().current()).as("a leader re-admitted after its loss is kept")
                   .isInstanceOf(LeaderElectionState.Led.class);
         assertThat(manager.leader()).isEqualTo(Option.some(SELF));
     }
@@ -76,13 +78,13 @@ class LeaderHookFollowUpTest {
 
         manager.onLeaderCommitted(SELF);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
-        assertThat(manager.context().fsm().current()).isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(manager.context().current()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(manager.leader()).isEqualTo(Option.some(SELF));
     }
 
     /// cx06 (v3605f), local `Led` path: the commit enters `Led(core-0)` while core-0 is not in the stored view, so the
     /// entry follows up with `LeaderOutOfView` and the tenure moves to `ReElecting`. Observers see `Led` before that
-    /// `ReElecting`. RED with the follow-up dispatched nested inside the hook (`ctx.fsm().dispatch` in place of
+    /// `ReElecting`. RED with the follow-up dispatched nested inside the hook (`Fsm#dispatch` in place of
     /// `ctx.followUp` in `Led#leftTheViewOnLocalEntry`): the inner transition is observed first. The commit is a task and
     /// the QuorumWaiting poll may hold the drainer when it is submitted, so the test awaits the `ReElecting` the
     /// follow-up produces before it reads the order.
@@ -127,7 +129,7 @@ class LeaderHookFollowUpTest {
 
         manager.watchClusterState(ClusterStateNotification.active());
         manager.watchClusterState(ClusterStateNotification.passive());
-        assertThat(manager.context().fsm().current()).as("instrument: QuorumLost")
+        assertThat(manager.context().current()).as("instrument: QuorumLost")
                   .isInstanceOf(LeaderElectionState.QuorumLost.class);
         kvLeader.set(Option.some(new LeaderElectionEvents.LeaderCommitted(PEER)));
         manager.watchClusterState(ClusterStateNotification.active());
@@ -147,7 +149,7 @@ class LeaderHookFollowUpTest {
         var manager = localDormantWithKnownLeader();
 
         manager.watchClusterState(ClusterStateNotification.active());
-        assertThat(manager.context().fsm().current()).isInstanceOf(LeaderElectionState.Led.class);
+        assertThat(manager.context().current()).isInstanceOf(LeaderElectionState.Led.class);
         assertThat(manager.leader()).as("the local election, decided after the known leader, wins")
                   .isEqualTo(Option.some(SELF));
     }
@@ -163,9 +165,8 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(() -> ctx.fsm()
-                              .dispatch(new ClusterFsmEvent.QuorumEstablished()));
-        assertThat(ctx.fsm().current()).as("instrument: QuorumWaiting")
+        inbound(ctx).serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
+        assertThat(ctx.current()).as("instrument: QuorumWaiting")
                   .isInstanceOf(LeaderElectionState.QuorumWaiting.class);
         assertThat(ctx.currentTopology()).as("instrument: SELF not in the stored view").doesNotContain(SELF);
 
@@ -176,7 +177,7 @@ class LeaderHookFollowUpTest {
         var manager = manager(true);
         var ctx = manager.context();
 
-        ctx.serially(() -> knowLeaderInView(ctx));
+        inbound(ctx).serially(() -> knowLeaderInView(ctx));
         assertThat(ctx.currentTopology()).as("instrument: both cores in the stored view").containsExactly(SELF, PEER);
         assertThat(ctx.localLeaderCandidate()).as("instrument: the local election picks core-0")
                   .isEqualTo(Option.some(SELF));
@@ -203,9 +204,9 @@ class LeaderHookFollowUpTest {
                                                                  f -> context(f, router, local).dormant(),
                                                                  recorder());
 
-        return new FsmBackedLeaderManager(fsm,
-                                          fsm.current().ctx(),
-                                          local);
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(fsm.current().ctx(),
+                                                             inbound(fsm.current().ctx()),
+                                                             local);
     }
 
     /// A drainer held by another thread until [HeldDrainer#release].
@@ -220,7 +221,7 @@ class LeaderHookFollowUpTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(() -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> inbound(ctx).serially(() -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 

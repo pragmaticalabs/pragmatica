@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -91,7 +93,7 @@ class LeaderChangeReplayBitTest {
         var harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("leader-change-replay-bit",
                                                                                     fsm -> context(fsm, router).dormant());
         var ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
         manager.installReactExecutor(executor);
         manager.installReplaySource(REPLAYING::get);
         harness.dispatch(new ClusterFsmEvent.QuorumEstablished());

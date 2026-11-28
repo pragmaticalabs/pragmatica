@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -116,7 +118,7 @@ class LeaderSerialDispatchCensusTest {
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 2));
         held.release();
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 3));
-        assertThat(manager.context().fsm().current()).isInstanceOf(LeaderElectionState.Stopped.class);
+        assertThat(manager.context().current()).isInstanceOf(LeaderElectionState.Stopped.class);
         assertThat(observedSequences()).as("only the view submitted before the stop reached the FSM")
                   .containsExactly(1L);
     }
@@ -128,7 +130,7 @@ class LeaderSerialDispatchCensusTest {
         var manager = dormantManager();
         var held = holdDrainer(manager.context());
 
-        manager.context().serially(LeaderSerialDispatchCensusTest::failingTask);
+        inbound(manager.context()).serially(LeaderSerialDispatchCensusTest::failingTask);
         manager.peerJoined(new PeerJoined(PEER, VIEW, ObservationSource.QUIC, 1));
         held.release();
         assertThat(observedSequences()).as("the event queued behind a failing task ran in the same drain")
@@ -149,9 +151,9 @@ class LeaderSerialDispatchCensusTest {
         var fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-serial-census-throwing-stop",
                                                                  f -> context(f, router).dormant(),
                                                                  throwingOnStop());
-        var manager = new FsmBackedLeaderManager(fsm,
-                                                 fsm.current().ctx(),
-                                                 false);
+        var manager = FsmBackedLeaderManager.fsmBackedLeaderManager(fsm.current().ctx(),
+                                                                    inbound(fsm.current().ctx()),
+                                                                    false);
 
         manager.stop();
         assertThat(fsm.current()).as("instrument: Shutdown was dispatched")
@@ -215,7 +217,7 @@ class LeaderSerialDispatchCensusTest {
     private static HeldDrainer holdDrainer(LeaderElectionContext ctx) throws InterruptedException {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        var holder = Thread.ofPlatform().start(() -> ctx.serially(() -> block(entered, release)));
+        var holder = Thread.ofPlatform().start(() -> inbound(ctx).serially(() -> block(entered, release)));
 
         assertThat(entered.await(10, TimeUnit.SECONDS)).as("instrument: the holder owns the drainer").isTrue();
 
@@ -240,7 +242,7 @@ class LeaderSerialDispatchCensusTest {
                                                                  recorder());
         var ctx = fsm.current().ctx();
 
-        return new FsmBackedLeaderManager(fsm, ctx, false);
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
     }
 
     private FsmObserver<LeaderElectionState, ClusterFsmEvent> recorder() {

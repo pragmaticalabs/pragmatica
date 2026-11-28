@@ -17,7 +17,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderManager.FsmBackedLeaderManager;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.TransportTripwireFixtures.TripwireTopology;
@@ -26,10 +28,12 @@ import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
 import org.pragmatica.consensus.topology.TransportObservation.PeerReconnected;
 import org.pragmatica.consensus.topology.TransportView;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.statemachine.FsmObserver;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -120,7 +124,19 @@ class PeerObservationOrderTransportTest {
 
     private FsmBackedLeaderManager followerRoutedFrom(MessageRouter.MutableRouter router) {
         LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> Promise.success(Unit.unit());
-        var built = (FsmBackedLeaderManager) LeaderManager.leaderManager(FOLLOWER, router, handler, ALL);
+        var machine = LeaderElectionFsm.leaderElectionFsm(FOLLOWER,
+                                                          Option.some(handler),
+                                                          ALL,
+                                                          router,
+                                                          LeaderElectionContext.DEFAULT_PROPOSAL_RETRY_DELAY,
+                                                          LeaderElectionContext.DEFAULT_BASE_ELECTION_DELAY,
+                                                          LeaderElectionContext.DEFAULT_PER_RANK_DELAY,
+                                                          FsmObserver.noop(),
+                                                          LeaderElectionContext.DEFAULT_RABIA_TERM_SUPPLIER,
+                                                          LeaderElectionContext.DEFAULT_CONSENSUS_READY_SUPPLIER,
+                                                          LeaderElectionContext.DEFAULT_CURRENT_LEADER_FROM_KV_SUPPLIER,
+                                                          LeaderElectionContext.DEFAULT_LEADER_PING_FRESH_FN);
+        var built = FsmBackedLeaderManager.fsmBackedLeaderManager(machine.context(), machine.inbound(), false);
 
         // Registered BEFORE the manager's route, so it runs first on the routing thread (CopyOnWriteArrayList order).
         router.addRoute(PeerJoined.class, (Consumer<PeerJoined>) this::holdTheLeaderJoin);
@@ -132,24 +148,24 @@ class PeerObservationOrderTransportTest {
         router.addRoute(PeerDisconnected.class, (Consumer<PeerDisconnected>) _ -> evictionHandled.countDown());
         router.addRoute(Send.class, (Consumer<Send>) _ -> {});
         built.context().enablePreVote(LONG);
-        built.fsm().dispatch(new ClusterFsmEvent.QuorumEstablished());
-        built.fsm().dispatch(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL, 1L));
-        built.fsm().dispatch(new ConsensusReady());
-        commitLeader(built.context(), built.fsm()::dispatch, LEADER, 1L);
+        machine.inbound().submit(new ClusterFsmEvent.QuorumEstablished());
+        machine.inbound().submit(new ClusterFsmEvent.NodeAdded(FOLLOWER, ALL, 1L));
+        machine.inbound().submit(new ConsensusReady());
+        commitLeader(built.context(), machine.inbound()::submit, LEADER, 1L);
 
         return built;
     }
 
     private boolean suspectsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.isLeaderSuspected();
     }
 
     private boolean followsTheLeader() {
-        return manager.fsm().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
+        return manager.context().current() instanceof LeaderElectionState.Led led && led.leader().equals(LEADER);
     }
 
     private String followerState() {
-        return "follower FSM " + manager.fsm().current() + ", follower topology " + manager.context().currentTopology();
+        return "follower FSM " + manager.context().current() + ", follower topology " + manager.context().currentTopology();
     }
 
     @Test

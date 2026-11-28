@@ -14,12 +14,14 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeIdentity;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderDoubtConfirmed;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -86,7 +88,7 @@ public final class LeaderPreVote {
         this.timeout = timeout;
     }
 
-    public static LeaderPreVote leaderPreVote(LeaderElectionContext ctx, TimeSpan timeout) {
+    static LeaderPreVote leaderPreVote(LeaderElectionContext ctx, TimeSpan timeout) {
         return new LeaderPreVote(ctx, timeout);
     }
 
@@ -135,8 +137,7 @@ public final class LeaderPreVote {
     }
 
     private Option<Boolean> stanceOn(NodeId leader) {
-        return switch (ctx.fsm()
-                          .current()) {
+        return switch (ctx.current()) {
             case LeaderElectionState.Led led -> some(sees(led, leader));
             case LeaderElectionState.Electing _, LeaderElectionState.ReElecting _ -> some(false);
             default -> none();
@@ -198,7 +199,9 @@ public final class LeaderPreVote {
         current.vouching = new HashSet<>();
         current.doubting = new HashSet<>(Set.of(ctx.self()));
         stopTimer(current);
-        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRoundTimeout(current, round)), timeout));
+        current.timer = some(SharedScheduler.schedule(ctx.suspicionEpisode(new Suspicion(current))
+                                                         .serialized(() -> onRoundTimeout(current, round)),
+                                                      timeout));
         log.info("Leader pre-vote round {}: {} lost its view of leader {}, asking {} voter(s) whether they still see it",
                  round,
                  ctx.self(),
@@ -269,14 +272,35 @@ public final class LeaderPreVote {
         var vouchers = current.vouching.size();
 
         stopTimer(current);
-        episode = none();
         log.info("Leader pre-vote: {} of {} voter(s) doubt leader {} ({} vouch) — proceeding to election",
                  doubters,
                  ctx.electorate().size(),
                  leader,
                  vouchers);
 
-        return () -> ctx.submit(new LeaderDoubtConfirmed(leader));
+        return () -> verdict(current, leader);
+    }
+
+    /// #3846 INV-E: the verdict goes through the suspicion handle, so it is admitted only while `current` is still this
+    /// pre-vote's live episode, and it is dispatched BEFORE the episode ends: `proceed` leaves the episode in place. The
+    /// episode ends in the `finally`, so a throwing dispatch still returns the pre-vote to idle for that leader (the next
+    /// `suspect(leader)` opens a new episode) and the throw propagates unchanged, as it does today.
+    private Unit verdict(Episode current, NodeId leader) {
+        try {
+            ctx.suspicionEpisode(new Suspicion(current)).dispatch(new LeaderDoubtConfirmed(leader));
+        } finally {
+            endEpisode(current);
+        }
+
+        return Unit.unit();
+    }
+
+    /// Ends `current` if it is still the live episode, compared by identity: `Led.onExit` may have cancelled it during the
+    /// dispatch, and a `suspect` after that may have opened a newer one, which this leaves alone.
+    private synchronized void endEpisode(Episode current) {
+        if (episode.filter(e -> e == current).isPresent()) {
+            cancelLocked();
+        }
     }
 
     private Runnable refrain(Episode current) {
@@ -291,7 +315,9 @@ public final class LeaderPreVote {
                  current.doubting.size(),
                  current.vouching.size(),
                  ctx.electorate().size());
-        current.timer = some(SharedScheduler.schedule(ctx.serialized(() -> onRetry(current)), retryDelay()));
+        current.timer = some(SharedScheduler.schedule(ctx.suspicionEpisode(new Suspicion(current))
+                                                         .serialized(() -> onRetry(current)),
+                                                      retryDelay()));
 
         return NO_EFFECT;
     }
@@ -328,14 +354,33 @@ public final class LeaderPreVote {
         return NO_EFFECT;
     }
 
-    private boolean isLive(Episode current) {
+    /// #3846: the suspicion episode as the identity its timers carry into the serial executor. Read there, so it takes the
+    /// lock like every other read of `episode`. A permitted implementation of the sealed [EpisodeIdentity]; only this class
+    /// builds one. The anchor: it is live only for the pre-vote the context installed ([LeaderElectionContext#preVote]), so
+    /// a pre-vote built over the node's context by other in-package code mints Suspicions that are never live: its timers
+    /// and its verdict are refused (K24).
+    final class Suspicion implements EpisodeIdentity {
+        private final Episode current;
+
+        private Suspicion(Episode current) {
+            this.current = current;
+        }
+
+        @Override
+        public boolean isLive() {
+            return ctx.preVote()
+                      .filter(installed -> installed == LeaderPreVote.this)
+                      .isPresent() && LeaderPreVote.this.isLive(current);
+        }
+    }
+
+    private synchronized boolean isLive(Episode current) {
         return episode.filter(live -> live == current)
                       .isPresent();
     }
 
     private boolean stillSuspected(NodeId leader) {
-        return ctx.fsm()
-                  .current() instanceof LeaderElectionState.Led led
+        return ctx.current() instanceof LeaderElectionState.Led led
                && led.leader()
                      .equals(leader)
                && led.isLeaderSuspected();

@@ -18,7 +18,6 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.LeaderCommitted;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
-import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
 import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
@@ -36,7 +35,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmObserver;
 import org.pragmatica.utility.react.ReactExecutor;
 
@@ -384,22 +382,45 @@ public interface LeaderManager {
                                                         currentLeaderFromKvSupplier,
                                                         leaderPingFreshFn);
 
-        return new FsmBackedLeaderManager(built.fsm(), built.context(), proposalHandler.isEmpty());
+        return FsmBackedLeaderManager.fsmBackedLeaderManager(built.context(), built.inbound(), proposalHandler.isEmpty());
     }
 
     /// FSM-backed implementation. `localMode=true` means no consensus; we synthesize
     /// `LeaderCommitted` events locally to drive the FSM.
     ///
     /// #3587: every entry point that delivers a leader-election event, or reads and writes election state on the way to
-    /// one, enters the node's one serial executor ([LeaderElectionContext#serially], [LeaderElectionContext#submit]), as
+    /// one, enters the node's one serial executor ([LeaderElectionContext.Inbound#serially], [LeaderElectionContext.Inbound#submit]), as
     /// the FSM's own timers and proposal completions do: every event of the node is handled in one total order, so a
     /// handler's check-then-act is atomic against every other event. A call made while another thread is draining
     /// returns before its event is handled. The install-time wiring (`install*`, `enableLeaderPreVote`) and the reads
     /// (`leader`, `isLeader`, `currentLeaderEpoch`, `replaying`) are not events and stay on the caller's thread.
-    /// `stop` handles every earlier event, then `Shutdown`, and rejects every later one ([LeaderElectionContext#stop]).
-    record FsmBackedLeaderManager(Fsm<LeaderElectionState, ClusterFsmEvent> fsm,
-                                  LeaderElectionContext context,
-                                  boolean localMode) implements LeaderManager {
+    /// `stop` handles every earlier event, then `Shutdown`, and rejects every later one ([LeaderElectionContext.Inbound#stop]).
+    ///
+    /// The manager never holds the Fsm (#3846): it reads state through the public [LeaderElectionContext#current], and
+    /// it has no accessor for the Inbound or the mode, so a test cannot reach the node's order through it.
+    final class FsmBackedLeaderManager implements LeaderManager {
+        private final LeaderElectionContext context;
+        private final LeaderElectionContext.Inbound inbound;
+        private final boolean localMode;
+
+        private FsmBackedLeaderManager(LeaderElectionContext context,
+                                       LeaderElectionContext.Inbound inbound,
+                                       boolean localMode) {
+            this.context = context;
+            this.inbound = inbound;
+            this.localMode = localMode;
+        }
+
+        public static FsmBackedLeaderManager fsmBackedLeaderManager(LeaderElectionContext context,
+                                                                    LeaderElectionContext.Inbound inbound,
+                                                                    boolean localMode) {
+            return new FsmBackedLeaderManager(context, inbound, localMode);
+        }
+
+        public LeaderElectionContext context() {
+            return context;
+        }
+
         @Override
         public org.pragmatica.lang.Unit installReactExecutor(ReactExecutor executor) {
             return context.installReactExecutor(executor);
@@ -417,7 +438,7 @@ public interface LeaderManager {
 
         @Override
         public org.pragmatica.lang.Unit installVoterConfiguration(org.pragmatica.consensus.rabia.VoterConfiguration configuration) {
-            context.serially(() -> applyVoterConfiguration(configuration));
+            inbound.serially(() -> applyVoterConfiguration(configuration));
 
             return org.pragmatica.lang.Unit.unit();
         }
@@ -425,15 +446,15 @@ public interface LeaderManager {
         private void applyVoterConfiguration(VoterConfiguration configuration) {
             if (configuration.contains(context.self())) {
                 installLeaderEligibility(configuration.members());
-                context.submit(new LeaderElectionEvents.VoterReadmitted());
+                inbound.submit(new LeaderElectionEvents.VoterReadmitted());
             } else {
-                context.submit(new LeaderElectionEvents.PassiveDirectory(configuration.members()));
+                inbound.submit(new LeaderElectionEvents.PassiveDirectory(configuration.members()));
             }
         }
 
         @Override
         public org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
-            context.submit(new LeaderElectionEvents.PassiveDirectory(members));
+            inbound.submit(new LeaderElectionEvents.PassiveDirectory(members));
 
             return org.pragmatica.lang.Unit.unit();
         }
@@ -444,7 +465,7 @@ public interface LeaderManager {
 
             context.installVoters(members);
             previous.filter(node -> !context.isEligible(node))
-                    .onPresent(node -> context.submit(new LeaderElectionEvents.PeerRemovedFromView(node)));
+                    .onPresent(node -> inbound.submit(new LeaderElectionEvents.PeerRemovedFromView(node)));
         }
 
         @Override
@@ -471,14 +492,14 @@ public interface LeaderManager {
         @Contract
         @Override
         public void leaderPreVoteRequest(LeaderPreVoteRequest request) {
-            context.serially(() -> context.preVote()
+            inbound.serially(() -> context.preVote()
                                           .onPresent(preVote -> preVote.onRequest(request)));
         }
 
         @Contract
         @Override
         public void leaderPreVoteResponse(LeaderPreVoteResponse response) {
-            context.serially(() -> context.preVote()
+            inbound.serially(() -> context.preVote()
                                           .onPresent(preVote -> preVote.onResponse(response)));
         }
 
@@ -502,7 +523,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader) {
-            context.serially(() -> commitLeader(leader));
+            inbound.serially(() -> commitLeader(leader));
         }
 
         private void commitLeader(NodeId leader) {
@@ -510,7 +531,7 @@ public interface LeaderManager {
                 return;
             }
 
-            context.submit(new LeaderElectionEvents.LeaderCommitted(leader));
+            inbound.submit(new LeaderElectionEvents.LeaderCommitted(leader));
         }
 
         /// The push of a committed leader with its view sequence enters the node's serial executor (#3587, #3605), the one
@@ -519,7 +540,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void onLeaderCommitted(NodeId leader, long viewSequence) {
-            context.serially(() -> commitLeader(leader, viewSequence));
+            inbound.serially(() -> commitLeader(leader, viewSequence));
         }
 
         private void commitLeader(NodeId leader, long viewSequence) {
@@ -532,25 +553,25 @@ public interface LeaderManager {
             // a later-arriving lower-sequence commit. The sequence-less `onLeaderCommitted(leader)`
             // path (local mode / test stubs) dispatches `LeaderCommitted.NO_SEQUENCE` and bypasses
             // the fence, as before.
-            context.submit(new LeaderElectionEvents.LeaderCommitted(leader, viewSequence));
+            inbound.submit(new LeaderElectionEvents.LeaderCommitted(leader, viewSequence));
         }
 
         @Contract
         @Override
         public void triggerElection() {
-            context.submit(new LeaderElectionEvents.ConsensusReady());
+            inbound.submit(new LeaderElectionEvents.ConsensusReady());
         }
 
         @Contract
         @Override
         public void stop() {
-            context.stop();
+            inbound.stop();
         }
 
         @Contract
         @Override
         public void peerJoined(PeerJoined peerJoined) {
-            context.serially(() -> dispatchView(nodeAdded(peerJoined.nodeId(),
+            inbound.serially(() -> dispatchView(nodeAdded(peerJoined.nodeId(),
                                                           peerJoined.topology(),
                                                           peerJoined.sequence())));
         }
@@ -558,7 +579,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerDisconnected(PeerDisconnected peerDisconnected) {
-            context.serially(() -> disconnectPeer(peerDisconnected));
+            inbound.serially(() -> disconnectPeer(peerDisconnected));
         }
 
         private void disconnectPeer(PeerDisconnected peerDisconnected) {
@@ -586,17 +607,17 @@ public interface LeaderManager {
         /// nothing, so `Led` loses it. A reconnect never takes this path (see [#peerReconnected]): it never elects.
         private void dispatchViewChange(BooleanSupplier applyLocally, ClusterFsmEvent event) {
             if (!localMode) {
-                context.submit(event);
+                inbound.submit(event);
             } else if (applyLocally.getAsBoolean()) {
                 electLocallyIfPossible();
-                context.submit(event);
+                inbound.submit(event);
             }
         }
 
         @Contract
         @Override
         public void peerObservedFaulty(PeerObservedFaulty peerObservedFaulty) {
-            context.serially(() -> removeFaultyPeer(peerObservedFaulty));
+            inbound.serially(() -> removeFaultyPeer(peerObservedFaulty));
         }
 
         private void removeFaultyPeer(PeerObservedFaulty peerObservedFaulty) {
@@ -613,7 +634,7 @@ public interface LeaderManager {
         @Contract
         @Override
         public void peerReconnected(PeerReconnected peerReconnected) {
-            context.serially(() -> reconnectPeer(peerReconnected));
+            inbound.serially(() -> reconnectPeer(peerReconnected));
         }
 
         private void reconnectPeer(PeerReconnected peerReconnected) {
@@ -629,7 +650,7 @@ public interface LeaderManager {
             // node. A lower node coming back is not a reason to move the leader; I3's election ticks cover a node that
             // holds no leader.
             if (restoresTheView(peerReconnected.nodeId(), peerReconnected.topology())) {
-                context.submit(nodeAdded(peerReconnected.nodeId(),
+                inbound.submit(nodeAdded(peerReconnected.nodeId(),
                                          peerReconnected.topology(),
                                          peerReconnected.sequence()));
             } else {
@@ -657,13 +678,13 @@ public interface LeaderManager {
         @Override
         public void selfShutdown(SelfShutdown selfShutdown) {
             // Self-shutdown is not a cluster decision — local view collapsing.
-            context.submit(new ClusterFsmEvent.QuorumDisappeared());
+            inbound.submit(new ClusterFsmEvent.QuorumDisappeared());
         }
 
         @Contract
         @Override
         public void watchClusterState(ClusterStateNotification clusterState) {
-            context.serially(() -> applyClusterState(clusterState));
+            inbound.serially(() -> applyClusterState(clusterState));
         }
 
         private void applyClusterState(ClusterStateNotification clusterState) {
@@ -673,14 +694,14 @@ public interface LeaderManager {
 
             switch (clusterState.state()) {
                 case ACTIVE -> onClusterActive();
-                case PASSIVE -> context.submit(new ClusterFsmEvent.QuorumDisappeared());
+                case PASSIVE -> inbound.submit(new ClusterFsmEvent.QuorumDisappeared());
             }
         }
 
         private void onClusterActive() {
-            context.submit(new ClusterFsmEvent.QuorumEstablished());
+            inbound.submit(new ClusterFsmEvent.QuorumEstablished());
             if (localMode) {
-                context.submit(new LeaderElectionEvents.ConsensusReady());
+                inbound.submit(new LeaderElectionEvents.ConsensusReady());
                 electLocallyIfPossible();
             }
         }
@@ -689,7 +710,7 @@ public interface LeaderManager {
         /// it. An empty applied view has no candidate and commits nothing (I1: it is the view, not the one it replaced).
         private void electLocallyIfPossible() {
             context.localLeaderCandidate()
-                   .onPresent(leader -> context.submit(new LeaderElectionEvents.LeaderCommitted(leader)));
+                   .onPresent(leader -> inbound.submit(new LeaderElectionEvents.LeaderCommitted(leader)));
         }
     }
 }

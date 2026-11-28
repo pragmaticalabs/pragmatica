@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory;
 /// Consequences the callers rely on:
 /// - Run-to-completion: a task submitted from inside a task runs AFTER the current one, never nested inside it.
 /// - A follow-up event an FSM hook decides is not a task here: the FSM dispatches it inside the running task, when the
-///   dispatch whose transition ran the hook returns ([LeaderElectionContext#followUp], `Fsm#followUp`), so it runs
+///   dispatch whose transition ran the hook returns ([EpisodeHandle#followUp], `Fsm#followUp`), so it runs
 ///   after that transition and before any other event of the node, queued or not.
 /// - Never waits: [#execute] does not block on another drainer, so it cannot close a lock cycle with a caller that holds a
 ///   lock while a task's listener (a leader-change subscriber) waits on that lock. A submitter that finds another drainer

@@ -9,12 +9,16 @@ package org.pragmatica.statemachine;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.ArrayDeque;
 import java.util.Queue;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.OwnerLifetime;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 
@@ -52,16 +56,24 @@ import static org.pragmatica.lang.utils.OwnerLifetime.ownerLifetime;
 /// the caller's handler or task) therefore sees the follow-up's outcome, exactly as a nested dispatch inside the hook
 /// would have shown it, and observers see the transitions in the order they happen.
 ///
+/// A [TransitionRequest] belongs to the dispatch frame that built it: every method of it checks, before any effect, that the
+/// calling thread's current frame is that frame. A call from another thread, or after the dispatch returned, is refused
+/// (see [#requireFrame]). A nested dispatch restores the enclosing frame, so a handler may use its request after a nested
+/// dispatch returns.
+///
 /// State identity is by reference. Data-free states must be singletons; data-carrying states
 /// are typically immutable records created fresh per transition. See [`FsmState`] for details.
 ///
 /// @param <S> The sealed state hierarchy.
 /// @param <E> The event type accepted by the FSM.
 public final class Fsm<S extends FsmState<S, E>, E> {
+    private static final Logger log = LoggerFactory.getLogger(Fsm.class);
+
     private final FsmTags tags;
     private final AtomicReference<Entered<S>> currentState;
     private final FsmObserver<S, E> observer;
     private final ThreadLocal<Option<Queue<E>>> followUps = ThreadLocal.withInitial(Option::none);
+    private final AtomicLong frameBreaches = new AtomicLong(0);
 
     private Fsm(FsmTags tags, FsmObserver<S, E> observer) {
         this.tags = tags;
@@ -206,12 +218,56 @@ public final class Fsm<S extends FsmState<S, E>, E> {
 
         followUps.set(Option.some(pending));
         try {
-            var state = current();
+            var entered = currentState.get();
 
-            state.handle(event, new TransitionRequest<>(this, state, event));
+            entered.state().handle(event, new TransitionRequest<>(this, entered, pending, event));
         } finally {
             followUps.set(enclosing);
         }
+    }
+
+    /// Refuse a call of a [TransitionRequest] made outside the dispatch that built it. GUARANTEE: a request acts only while
+    /// its own frame is the calling thread's current frame, so a request kept past its dispatch, or handed to another
+    /// thread, changes nothing. MECHANISM: `frame` is the queue of the dispatch that built the request; the calling thread's
+    /// current frame must be that same queue. Otherwise this logs one ERROR line naming the rule and the calling thread,
+    /// counts it ([#frameBreachesForTest]) and throws [IllegalStateException]. A throw on a scheduler thread is swallowed by
+    /// the scheduler, so the ERROR line is the operator's signal.
+    @Contract
+    void requireFrame(Queue<E> frame) {
+        if (!inFrame(frame)) {
+            throw frameBreach();
+        }
+    }
+
+    private boolean inFrame(Queue<E> frame) {
+        return followUps.get()
+                        .filter(current -> current == frame)
+                        .isPresent();
+    }
+
+    private IllegalStateException frameBreach() {
+        var message = "TransitionRequest used outside the dispatch that built it: FSM " + name()
+                    + ", called from thread " + callingThread();
+
+        frameBreaches.incrementAndGet();
+        log.error(message);
+
+        return new IllegalStateException(message);
+    }
+
+    /// The caller named usefully: `#id`, plus `'name'` when the name is non-empty (a virtual thread's is empty).
+    private static String callingThread() {
+        var thread = Thread.currentThread();
+        var name = thread.getName();
+
+        return name.isEmpty()
+               ? "#" + thread.threadId()
+               : "#" + thread.threadId() + " '" + name + "'";
+    }
+
+    /// Test seam: how many calls [#requireFrame] refused.
+    long frameBreachesForTest() {
+        return frameBreaches.get();
     }
 
     /// Dispatch every queued follow-up in FIFO order, each to completion, a throwing one included: the first throwable

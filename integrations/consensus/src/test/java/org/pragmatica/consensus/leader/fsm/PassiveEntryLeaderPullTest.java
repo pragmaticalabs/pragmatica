@@ -7,6 +7,8 @@
 
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
@@ -355,7 +357,7 @@ class PassiveEntryLeaderPullTest {
         harness = FsmTestHarness.<LeaderElectionState, ClusterFsmEvent>harness("passive-entry-leader-pull",
                                                                                fsm -> context(fsm, router).dormant());
         ctx = ((LeaderElectionState) harness.state()).ctx();
-        manager = new FsmBackedLeaderManager(ctx.fsm(), ctx, false);
+        manager = FsmBackedLeaderManager.fsmBackedLeaderManager(ctx, inbound(ctx), false);
     }
 
     private void record(LeaderChange change) {

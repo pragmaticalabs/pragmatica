@@ -6,6 +6,8 @@
  */
 package org.pragmatica.consensus.leader.fsm;
 
+import static org.pragmatica.consensus.leader.fsm.LeaderInboundForTest.inbound;
+
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -33,9 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3605 round-4 ruling (know 4c954b1c5d): confinement is ENFORCED at the dispatch boundary. Every FSM dispatch of
 /// leader code goes through [LeaderElectionContext#dispatchConfined], which throws [IllegalStateException] naming the
-/// rule and the calling thread when the caller is not the node's serial drainer; `dispatchSelf` uses it.
+/// rule and the calling thread when the caller is not the node's serial drainer; `EpisodeHandle#dispatch` reaches it.
 ///
-/// Pinned here: the checked method refuses a foreign thread and the event never reaches the FSM; `dispatchSelf`,
+/// Pinned here: the checked method refuses a foreign thread and the event never reaches the FSM; `EpisodeHandle#dispatch`,
 /// reached from a handler that runs off the drainer, refuses the same way; and a Led tenure whose timers all fire
 /// refuses nothing. The last one is the detector for a NEW unwrapped site: an off-drainer callback added to the Led
 /// entry that dispatches without `ctx.serialized(...)` is refused on its scheduler thread, and the refusal count goes
@@ -50,6 +52,8 @@ class LeaderDispatchConfinementTest {
     private static final String FOREIGN = "foreign-caller-3605";
     private static final String RULE = "#3605 confinement rule";
 
+    // The context no longer exposes its FSM (#3846): a test that dispatches from a thread production never uses keeps it.
+    private Fsm<LeaderElectionState, ClusterFsmEvent> fsm;
     private final AtomicInteger leaseChecks = new AtomicInteger();
 
     @Test
@@ -64,19 +68,17 @@ class LeaderDispatchConfinementTest {
                                .hasMessageContaining(RULE)
                                .hasMessageContaining("serial drainer")
                                .hasMessageContaining(FOREIGN);
-            assertThat(ctx.fsm()
-                          .current()).as("the refused event never reached the FSM")
+            assertThat(ctx.current()).as("the refused event never reached the FSM")
                                      .isInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("the refusal is counted")
                                                         .isEqualTo(1);
-            ctx.serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
-            assertThat(ctx.fsm()
-                          .current()).as("control: the same dispatch on the drainer reaches the FSM")
+            inbound(ctx).serially(() -> ctx.dispatchConfined(new ClusterFsmEvent.QuorumEstablished()));
+            assertThat(ctx.current()).as("control: the same dispatch on the drainer reaches the FSM")
                                      .isNotInstanceOf(LeaderElectionState.Dormant.class);
             assertThat(ctx.confinementBreachesForTest()).as("control: a dispatch on the drainer is not refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop();
+            inbound(ctx).stop();
         }
     }
 
@@ -104,7 +106,7 @@ class LeaderDispatchConfinementTest {
                                     .message()
                                     .doesNotContain("''");
         } finally {
-            ctx.stop();
+            inbound(ctx).stop();
         }
     }
 
@@ -121,7 +123,7 @@ class LeaderDispatchConfinementTest {
 
         try {
             var holder = Thread.ofPlatform()
-                               .start(() -> ctx.serially(() -> holdTheDrainer(holding, release)));
+                               .start(() -> inbound(ctx).serially(() -> holdTheDrainer(holding, release)));
             var dispatcher = Thread.ofPlatform()
                                    .unstarted(() -> dispatchThenRead(ctx, stateAtReturn));
 
@@ -141,7 +143,7 @@ class LeaderDispatchConfinementTest {
                                            .isNotInstanceOf(LeaderElectionState.Dormant.class);
         } finally {
             release.countDown();
-            ctx.stop();
+            inbound(ctx).stop();
         }
     }
 
@@ -161,39 +163,34 @@ class LeaderDispatchConfinementTest {
 
     private static void dispatchThenRead(LeaderElectionContext ctx, AtomicReference<LeaderElectionState> stateAtReturn) {
         OnDrainer.dispatch(ctx, new ClusterFsmEvent.QuorumEstablished());
-        stateAtReturn.set(ctx.fsm()
-                             .current());
+        stateAtReturn.set(ctx.current());
     }
 
-    /// `dispatchSelf` from a handler that runs off the drainer: a view-free removal of the Led leader holds the leader
-    /// to the view ([LeaderElectionState] `holdLeaderToView`), which dispatches `LeaderOutOfView` through `dispatchSelf`.
+    /// `EpisodeHandle#dispatch` from a handler that runs off the drainer: a view-free removal of the Led leader holds the
+    /// leader to the view ([LeaderElectionState] `holdLeaderToView`), which dispatches `LeaderOutOfView` through the handler's episode.
     /// Delivered straight to the FSM from a foreign thread, that dispatch is refused and the exception leaves the
     /// handler.
     @Test
-    void dispatchSelf_reachedOffTheDrainer_isRefusedNamingTheRuleAndTheCaller() throws InterruptedException {
+    void episodeDispatch_reachedOffTheDrainer_isRefusedNamingTheRuleAndTheCaller() throws InterruptedException {
         var ctx = context(ctx2 -> LeaderElectionState.Led.fresh(ctx2, PEER), LONG);
 
         try {
-            var refused = onForeignThread(() -> ctx.fsm()
-                                                   .dispatch(new PeerRemovedFromView(PEER)));
+            var refused = onForeignThread(() -> fsm.dispatch(new PeerRemovedFromView(PEER)));
 
-            assertThat(refused).as("dispatchSelf off the serial drainer is refused")
+            assertThat(refused).as("the episode dispatch off the serial drainer is refused")
                                .isInstanceOf(IllegalStateException.class)
                                .hasMessageContaining(RULE)
                                .hasMessageContaining("LeaderOutOfView")
                                .hasMessageContaining(FOREIGN);
-            assertThat(ctx.fsm()
-                          .current()).as("the refused LeaderOutOfView never reached the FSM: the tenure stands")
+            assertThat(ctx.current()).as("the refused LeaderOutOfView never reached the FSM: the tenure stands")
                                      .isInstanceOf(LeaderElectionState.Led.class);
-            ctx.serially(() -> ctx.fsm()
-                                  .dispatch(new PeerRemovedFromView(PEER)));
-            assertThat(ctx.fsm()
-                          .current()).as("control: on the drainer the same removal ends the tenure")
+            inbound(ctx).serially(() -> fsm.dispatch(new PeerRemovedFromView(PEER)));
+            assertThat(ctx.current()).as("control: on the drainer the same removal ends the tenure")
                                      .isNotInstanceOf(LeaderElectionState.Led.class);
             assertThat(ctx.confinementBreachesForTest()).as("control: only the off-drainer dispatch was refused")
                                                         .isEqualTo(1);
         } finally {
-            ctx.stop();
+            inbound(ctx).stop();
         }
     }
 
@@ -206,9 +203,10 @@ class LeaderDispatchConfinementTest {
         var ctx = context(ctx2 -> LeaderElectionState.Led.fresh(ctx2, PEER), SHORT);
 
         try {
-            ctx.serially(() -> ctx.fsm()
-                                  .current()
-                                  .onEntry());
+            // the Fsm runs no entry hook for its initial state: the test runs it, on the drainer, with the initial entry's lifetime
+            inbound(ctx).serially(() -> ctx.current()
+                                  .onEntry(fsm.entered()
+                                              .lifetime()));
             Awaitility.await("instrument: the lease checked twice, so every Led timer armed at entry has fired")
                       .atMost(Duration.ofSeconds(10))
                       .pollInterval(Duration.ofMillis(5))
@@ -219,7 +217,7 @@ class LeaderDispatchConfinementTest {
                       .pollInterval(Duration.ofMillis(5))
                       .until(() -> ctx.confinementBreachesForTest() == 0);
         } finally {
-            ctx.stop();
+            inbound(ctx).stop();
         }
     }
 
@@ -258,7 +256,7 @@ class LeaderDispatchConfinementTest {
         var router = MessageRouter.mutable();
 
         router.addRoute(LeaderChange.class, LeaderDispatchConfinementTest::ignoreChange);
-        var fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-dispatch-confinement",
+        fsm = Fsm.<LeaderElectionState, ClusterFsmEvent> fsm("leader-dispatch-confinement",
                                                                  f -> initial.apply(context(f, router, ledDelay)));
 
         return fsm.current()

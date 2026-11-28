@@ -15,6 +15,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.consensus.leader.LeaderManager.LeaderProposalHandler;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.leader.fsm.LeaderElectionContext.EpisodeHandle;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ConsensusReady;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ElectionTick;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.KvSyncGraceTimeout;
@@ -27,6 +28,7 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents.ProposalSettled;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.OwnerLifetime;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
@@ -84,16 +86,21 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
     LeaderElectionContext ctx();
 
-    /// Dispatches an event to this FSM instance from code that is ALREADY confined to the node's serial executor
-    /// (#3587): a handler, or a callback body wrapped in [LeaderElectionContext#serialized]. It has no queueing path of
-    /// its own (#3605 round-3 ruling): every callback that runs off the drainer (a timer, a promise completion) enters
-    /// the node's order through ONE path, `ctx.serialized(...)`, and calls this only inside it. Enforced, not assumed
-    /// (round-4 ruling): it goes through [LeaderElectionContext#dispatchConfined], which throws
-    /// [IllegalStateException] when the caller is not the drainer, so an unwrapped callback fails the first time it
-    /// fires instead of dispatching on its own thread. A hook never takes this path: it follows up
-    /// ([LeaderElectionContext#followUp]).
-    private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.dispatchConfined(event);
+    /// #3846 round 2: the entry hook the Fsm calls with the lifetime of THIS entry. It builds the entry's
+    /// [EpisodeHandle] ([LeaderElectionContext#entryEpisode]) and passes it to [#onEntered]: the handle is received at
+    /// entry, by the hook, and is the only way for a state to reach the serial executor or [Fsm#followUp] from outside
+    /// the current dispatch frame.
+    @Contract
+    @Override
+    default void onEntry(OwnerLifetime life) {
+        onEntered(ctx().entryEpisode(life));
+    }
+
+    /// The entry hook of a state: `episode` is this entry's handle. A state that arms a timer or a completion, or decides
+    /// a follow-up, overrides this and does it through `episode`; a state that does neither keeps [#onEntry()].
+    @Contract
+    default void onEntered(EpisodeHandle episode) {
+        onEntry();
     }
 
     // --- State records ---
@@ -111,6 +118,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     record Dormant(LeaderElectionContext ctx) implements LeaderElectionState {
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
@@ -120,9 +129,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // the SSOT for consensus readiness is the consensus engine itself, queried on
                 // entry to QuorumWaiting via `ctx.consensusReadySupplier()`.
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
-                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, episode, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, episode, ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, episode, removed));
                 default -> tx.ignore();
             }
         }
@@ -147,7 +156,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         @Override
-        public void onEntry() {
+        public void onEntered(EpisodeHandle episode) {
             // R6 always-listen: pull KV for a committed leader on every entry. If a peer has
             // already committed a leader visible in the local KV (e.g. a re-joining node whose
             // snapshot included `LeaderKey`), we must observe it here — without this pull, the
@@ -156,16 +165,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // contract. The hook decides ONE follow-up from its inputs (#3587, `FsmState`): a
             // `LeaderCommitted` for a KV leader to adopt (this state's handler arm always moves to
             // `Led(thatLeader)`, which owns its own timers), else consensus readiness or the poll.
-            kvCommitToAdopt(ctx).onPresent(ctx::followUp).onEmpty(this::advanceOrPoll);
+            kvCommitToAdopt(ctx).onPresent(episode::followUp).onEmpty(() -> advanceOrPoll(episode));
         }
 
-        private void advanceOrPoll() {
+        private void advanceOrPoll(EpisodeHandle episode) {
             // Query the consensus engine's readiness state directly (SSOT). If consensus is
             // already active we synthesize a ConsensusReady event so the existing handler arm
             // below advances the FSM, as the follow-up of this entry (#3587).
             if (ctx.consensusReadySupplier().get()) {
                 log.debug("Consensus engine reports ready on entry to QuorumWaiting — advancing");
-                ctx.followUp(new ConsensusReady());
+                episode.followUp(new ConsensusReady());
 
                 return;
             }
@@ -178,7 +187,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // to flip.
             log.debug("Consensus engine not ready on entry — scheduling periodic re-check at {}ms",
                       POLL_INTERVAL.millis());
-            var future = SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this, () -> pollConsensusAndKv(ctx)),
+            var future = SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> pollConsensusAndKv(ctx, episode)),
                                                              POLL_INTERVAL);
 
             pollFuture.set(future);
@@ -196,15 +205,17 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case ConsensusReady _ -> tx.transitionTo(ctx.awaitingKvSync());
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.dormant());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
-                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
-                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, episode, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, episode, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, episode, removed);
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, "QuorumWaiting", tx);
                 default -> tx.ignore();
             }
@@ -249,7 +260,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         @Override
-        public void onEntry() {
+        public void onEntered(EpisodeHandle episode) {
             // Pull-side fast path — if KV already has a leader (auto-heal: replacement node
             // joined an existing cluster, KVSync already applied LeaderKey before we got here),
             // follow up with LeaderCommitted. #1803: a leader this node already observed (while
@@ -260,15 +271,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // `LeaderCommitted` arm always moves to `Led(leader)`, so a second adoption never runs.
             kvCommitToAdopt(ctx).orElse(() -> ctx.currentLeader()
                                                  .map(LeaderCommitted::new))
-                           .onPresent(ctx::followUp)
-                           .onEmpty(this::armGraceTimer);
+                           .onPresent(episode::followUp)
+                           .onEmpty(() -> armGraceTimer(episode));
         }
 
-        private void armGraceTimer() {
+        private void armGraceTimer(EpisodeHandle episode) {
             log.info("Entering AwaitingKvSync: deferring leader-proposal for {}ms to absorb KV-sync from peers",
                      ctx.kvSyncGraceDelay().millis());
-            var future = SharedScheduler.schedule(ctx.serializedFor(this,
-                                                                    () -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
+            var future = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new KvSyncGraceTimeout())),
                                                   ctx.kvSyncGraceDelay());
 
             graceTimeoutFuture.set(future);
@@ -286,16 +296,18 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case LeaderCommitted lc -> adoptLeaderUnconditionally(ctx, lc, "AwaitingKvSync", tx);
-                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, tx, this);
+                case KvSyncGraceTimeout _ -> graceTimeoutFallthrough(ctx, episode, tx, this);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
-                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
-                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, episode, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, episode, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, episode, removed);
                 default -> tx.ignore();
             }
         }
@@ -335,6 +347,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///            /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, adm, env, hi, removed, suspect>>
     /// ```
     private static void graceTimeoutFallthrough(LeaderElectionContext ctx,
+                                                EpisodeHandle episode,
                                                 TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                                 AwaitingKvSync waiting) {
         // The pull carries the KV record's own sequence, as every KV pull does (#3588 F1); a record older than the adopted
@@ -343,7 +356,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
            .get()
            .filter(commit -> !isOlderThanAdopted(ctx, commit))
            .onPresent(commit -> adoptVisibleLeader(ctx, commit, tx))
-           .onEmpty(() -> electOrKeepWaiting(ctx, tx, waiting));
+           .onEmpty(() -> electOrKeepWaiting(ctx, episode, tx, waiting));
     }
 
     private static void adoptVisibleLeader(LeaderElectionContext ctx,
@@ -355,10 +368,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void electOrKeepWaiting(LeaderElectionContext ctx,
+                                           EpisodeHandle episode,
                                            TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx,
                                            AwaitingKvSync waiting) {
         if (ctx.isKvSyncPending() && waitedLessThanMax(ctx, waiting)) {
-            tx.handle(() -> rearmGrace(ctx, waiting));
+            tx.handle(() -> rearmGrace(ctx, episode, waiting));
 
             return;
         }
@@ -376,13 +390,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                                                  .nanos();
     }
 
-    private static void rearmGrace(LeaderElectionContext ctx, AwaitingKvSync waiting) {
+    private static void rearmGrace(LeaderElectionContext ctx, EpisodeHandle episode, AwaitingKvSync waiting) {
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(ctx.serializedFor(waiting,
-                                                               () -> dispatchSelf(ctx,
-                                                                                  new KvSyncGraceTimeout())),
+               .set(SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new KvSyncGraceTimeout())),
                                              ctx.kvSyncGraceDelay()));
     }
 
@@ -390,18 +402,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// both signals on every tick so a peer-committed leader observed during the QuorumWaiting
     /// window short-circuits to `Led` without waiting for the consensus-readiness flip.
     /// On a true consensus-readiness flag this dispatches `ConsensusReady` into the FSM so the
-    /// handler can advance to `AwaitingKvSync`. The dispatch path is idempotent in non-
-    /// `QuorumWaiting` states (Dormant absorbs as `NO_ACTION_DORMANT`; QuorumLost absorbs the
-    /// same way; AwaitingKvSync/Electing/ReElecting/Led/Stopped fall through to `tx.ignore()`),
-    /// so a tick that races the FSM's own state transition is harmless. The KV pull goes
-    /// through `adoptLeaderFromKvIfPresent` which synthesizes a `LeaderCommitted`; if the FSM
-    /// is no longer in QuorumWaiting the synthetic event is consumed by whatever state owns
-    /// the FSM at dispatch time (or harmlessly ignored).
-    private static void pollConsensusAndKv(LeaderElectionContext ctx) {
-        adoptLeaderFromKvIfPresent(ctx);
+    /// handler can advance to `AwaitingKvSync`. Both dispatches go through this tick's `episode`
+    /// (#3846 INV-E): the KV pull's `LeaderCommitted` is the first, and when it moves QuorumWaiting
+    /// to `Led` the entry has ended, so the second (`ConsensusReady`) is REFUSED by the handle, not
+    /// consumed by whatever state owns the FSM at dispatch time. A tick that races the FSM's own
+    /// transition therefore reaches no state of another entry.
+    private static void pollConsensusAndKv(LeaderElectionContext ctx, EpisodeHandle episode) {
+        adoptLeaderFromKvIfPresent(ctx, episode);
         if (ctx.consensusReadySupplier().get()) {
             log.info("Consensus engine became ready during QuorumWaiting poll — advancing");
-            dispatchSelf(ctx, new ConsensusReady());
+            episode.dispatch(new ConsensusReady());
         }
     }
 
@@ -430,27 +440,24 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                 ctx.committedViewSequence(),
                                 new AtomicReference<>(),
                                 new AtomicReference<>(),
-                                new AtomicReference<>()).armTimers();
+                                new AtomicReference<>());
         }
 
-        /// #3809: arms the first tick and the peer observation for THIS record, so each tick is fenced to this episode
-        /// ([LeaderElectionContext#serializedFor]). The timers are armed here, from `fresh`, before the Fsm has the
-        /// record: the record is the episode, so it exists before its timers.
-        private Electing armTimers() {
-            tickFuture.set(scheduleStaircaseFirstTick(ctx, this, "Electing", Option.none()));
-            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this,
-                                                                                        () -> adoptLeaderFromKvIfPresent(ctx)),
-                                                                      ctx.peerObservationInterval()));
-
-            return this;
-        }
-
+        /// #3809, #3846 round 2: arms the first tick and the peer observation for THIS entry, through the entry's own
+        /// handle, so each tick is fenced to this episode. They are armed here, by the entry hook, not in `fresh`: a record
+        /// built for a transition that then loses its CAS arms nothing, and the only identity a tick can carry is the one
+        /// the Fsm handed this entry. A handler of this entry mints its own handle from its transition request
+        /// ([LeaderElectionContext#handlerEpisode]) for the arm sites of the retry tick, the proposal's timeout and completion.
         @Override
-        public void onEntry() {
+        public void onEntered(EpisodeHandle episode) {
+            tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "Electing", Option.none()));
+            observationFuture.set(SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> adoptLeaderFromKvIfPresent(ctx,
+                                                                                                                          episode)),
+                                                                      ctx.peerObservationInterval()));
             ctx.clearProposalInFlight();
             ctx.resetElectionRetryCount();
             ctx.resetStuckElectionCount();
-            followUpKvLeader(ctx);
+            followUpKvLeader(ctx, episode);
         }
 
         @Override
@@ -471,20 +478,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
-                    adoptLeaderFromKvIfPresent(ctx);
-                    trySubmitProposal(ctx, this);
+                    adoptLeaderFromKvIfPresent(ctx, episode);
+                    trySubmitProposal(ctx, episode, this);
                 });
-                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
+                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, episode, this, ps));
                 case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "Electing", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
-                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
-                case PeerRemovedFromView removed -> handleRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, episode, this, na);
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, episode, this, ng);
+                case PeerRemovedFromView removed -> handleRemoval(ctx, episode, this, removed);
                 default -> tx.ignore();
             }
         }
@@ -515,8 +524,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         }
 
         @Override
-        public void onEntry() {
-            if (leftTheViewOnLocalEntry()) {
+        public void onEntered(EpisodeHandle episode) {
+            if (leftTheViewOnLocalEntry(episode)) {
                 return;
             }
 
@@ -541,7 +550,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // follower's freshness cache before the lease can observe it. Without the warm-up the
             // lease trips on every new leader before its first freshness signal can arrive — the
             // perpetual re-election churn seen on loaded hosts.
-            var future = SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this, () -> checkLeaderLease(this)),
+            var future = SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> checkLeaderLease(this, episode)),
                                                              ctx.leaderLeaseWarmup(),
                                                              ctx.leaderLeaseCheckInterval());
 
@@ -552,16 +561,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// view written by an earlier event may have dropped that node between the commit's admission and this
         /// transition. The I2 predicate is read here, BEFORE the leader is published, so such a tenure announces
         /// nothing; the hook does not dispatch (`FsmState`, #3587): the loss is this entry's follow-up
-        /// `LeaderOutOfView` ([LeaderElectionContext#followUp]), which this tenure handles before any other event, as
+        /// `LeaderOutOfView` ([EpisodeHandle#followUp]), which this tenure handles before any other event, as
         /// the I2 site's own event ([#holdLeaderToView]).
         /// Cluster mode is exempt: a consensus commit is adopted when absent from the view (FIX 1), and the next view
         /// checks it.
-        private boolean leftTheViewOnLocalEntry() {
+        private boolean leftTheViewOnLocalEntry(EpisodeHandle episode) {
             if (!ctx.isLocalMode() || isInStoredView(ctx, leader)) {
                 return false;
             }
 
-            ctx.followUp(new LeaderOutOfView(leader));
+            episode.followUp(new LeaderOutOfView(leader));
 
             return true;
         }
@@ -586,12 +595,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
-                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
-                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
-                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, episode, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, episode, removed);
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, episode, na);
                 case LeaderOutOfView out -> handleLeaderOutOfViewInLed(ctx, this, out, tx);
                 case LeaderCommitted lc -> handleLeaderCommittedInLed(ctx, leader, lc, tx);
                 case LeaderSilent ls -> handleLeaderSilentInLed(ctx, this, ls, tx);
@@ -615,7 +626,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// the carried `silentLeader` so a tick that races a leadership swap cannot re-elect away from
     /// the NEW leader. Idempotent against state changes: if the FSM has already left this `Led`
     /// record the synthetic `LeaderSilent` is absorbed (stale-leader guard or `tx.ignore()`).
-    private static void checkLeaderLease(Led led) {
+    private static void checkLeaderLease(Led led, EpisodeHandle episode) {
         var ctx = led.ctx();
         var leader = led.leader();
 
@@ -642,7 +653,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  leader,
                  silent,
                  LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS);
-        dispatchSelf(ctx, new LeaderSilent(leader));
+        episode.dispatch(new LeaderSilent(leader));
     }
 
     /// Handles a `LeaderSilent` in [`Led`]. Fenced by `silentLeader`: a `LeaderSilent` naming a
@@ -683,11 +694,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// `namedFailed` is the node a view-free removal named (#3044): SWIM evidence that it failed, so a held leader it
     /// names is lost even where the storage KEPT it (it is this node, or the last node left), the one case the stored
     /// view cannot express. A view write names none.
-    private static void holdLeaderToView(LeaderElectionContext ctx, Option<NodeId> namedFailed) {
-        heldLeader(ctx.fsm().current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
-                                                                                                    .isPresent())
-                  .onPresent(leader -> dispatchSelf(ctx,
-                                                    new LeaderOutOfView(leader)));
+    private static void holdLeaderToView(LeaderElectionContext ctx, EpisodeHandle episode, Option<NodeId> namedFailed) {
+        heldLeader(ctx.current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
+                                                                                              .isPresent())
+                  .onPresent(leader -> episode.dispatch(new LeaderOutOfView(leader)));
     }
 
     /// The one #3092 I2 membership predicate: `node` is in the stored eligible view. Every in-view test in this file
@@ -730,10 +740,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                 /\ named' = None
     ///                 /\ UNCHANGED <<kv, pend, adSeq, lastAd, obsSeq, adm, taken>>
     /// ```
-    private static boolean storeView(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
+    private static boolean storeView(LeaderElectionContext ctx,
+                                     EpisodeHandle episode,
+                                     ClusterFsmEvent.TopologyChange event) {
         var applied = ctx.applyTopology(event);
 
-        holdLeaderToView(ctx, Option.none());
+        holdLeaderToView(ctx, episode, Option.none());
 
         return applied;
     }
@@ -760,10 +772,11 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                 /\ cluster' = FALSE
     ///                 /\ UNCHANGED <<vseq, kv, pend, adSeq, lastAd, obsSeq, adm, hi, suspect, taken>>
     /// ```
-    private static boolean storeRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
+    private static boolean storeRemoval(LeaderElectionContext ctx, EpisodeHandle episode, PeerRemovedFromView event) {
         var removed = ctx.removeFromView(event.node());
 
         holdLeaderToView(ctx,
+                         episode,
                          Option.some(event.node()));
 
         return removed;
@@ -918,32 +931,27 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // first; higher ranks observe its commit via the independent peer-observation timer
             // (or the KV pull on entry) and abandon their pending tick before it fires. Retries
             // after a failed proposal continue to use `proposalRetryDelay` via the existing
-            // `rescheduleCurrentTick` path — the staircase only governs the FIRST tick after
+            // `rescheduleTick` path — the staircase only governs the FIRST tick after
             // entry to the state, which is exactly when herding would otherwise occur.
             return new ReElecting(ctx,
                                   ctx.committedViewSequence(),
                                   suspect,
                                   new AtomicReference<>(),
                                   new AtomicReference<>(),
-                                  new AtomicReference<>()).armTimers();
+                                  new AtomicReference<>());
         }
 
-        /// #3809: as [Electing#armTimers]: the first tick and the peer observation are fenced to this episode.
-        private ReElecting armTimers() {
-            tickFuture.set(scheduleStaircaseFirstTick(ctx, this, "ReElecting", suspect));
-            observationFuture.set(SharedScheduler.scheduleAtFixedRate(ctx.serializedFor(this,
-                                                                                        () -> adoptLeaderFromKvIfPresent(ctx)),
-                                                                      ctx.peerObservationInterval()));
-
-            return this;
-        }
-
+        /// As [Electing#onEntered]: the timers are armed by the entry hook, through this entry's own handle.
         @Override
-        public void onEntry() {
+        public void onEntered(EpisodeHandle episode) {
+            tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "ReElecting", suspect));
+            observationFuture.set(SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> adoptLeaderFromKvIfPresent(ctx,
+                                                                                                                          episode)),
+                                                                      ctx.peerObservationInterval()));
             ctx.clearProposalInFlight();
             ctx.resetStuckElectionCount();
             clearLeaderAndNotify(ctx);
-            followUpKvLeader(ctx);
+            followUpKvLeader(ctx, episode);
         }
 
         @Override
@@ -964,20 +972,22 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
                 case ElectionTick _ -> tx.handle(() -> {
-                    adoptLeaderFromKvIfPresent(ctx);
-                    trySubmitProposal(ctx, this);
+                    adoptLeaderFromKvIfPresent(ctx, episode);
+                    trySubmitProposal(ctx, episode, this);
                 });
-                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, ps));
+                case ProposalSettled ps -> tx.handle(() -> handleProposalSettled(ctx, episode, this, ps));
                 case LeaderCommitted lc -> adoptLeaderIfPostElectionCommit(ctx, lc, entryBaseline, "ReElecting", tx);
                 case ClusterFsmEvent.QuorumDisappeared _ -> tx.transitionTo(ctx.quorumLost());
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
-                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, na);
-                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, ng);
-                case PeerRemovedFromView removed -> handleRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> handleTopologyChange(ctx, episode, this, na);
+                case ClusterFsmEvent.NodeGone ng -> handleTopologyChange(ctx, episode, this, ng);
+                case PeerRemovedFromView removed -> handleRemoval(ctx, episode, this, removed);
                 default -> tx.ignore();
             }
         }
@@ -994,6 +1004,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
@@ -1010,9 +1022,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 // `ctx.consensusReadySupplier()` on next entry to QuorumWaiting (after
                 // QuorumEstablished re-establishes quorum).
                 case ConsensusReady _ -> tx.handle(NO_ACTION_DORMANT);
-                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, na);
-                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, ng);
-                case PeerRemovedFromView removed -> storeRemoval(ctx, removed);
+                case ClusterFsmEvent.NodeAdded na -> storeView(ctx, episode, na);
+                case ClusterFsmEvent.NodeGone ng -> storeView(ctx, episode, ng);
+                case PeerRemovedFromView removed -> storeRemoval(ctx, episode, removed);
                 case LeaderCommitted lc -> log.warn("Rejecting stale LeaderCommitted({}) in QuorumLost", lc.leader());
                 default -> tx.ignore();
             }
@@ -1030,11 +1042,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
 
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
             // Terminal: no transition. A view is still stored (#3092 I1, the same in local and cluster mode).
             switch (event) {
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, ng));
-                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storeView(ctx, episode, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storeView(ctx, episode, ng));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, episode, removed));
                 default -> tx.ignore();
             }
         }
@@ -1114,6 +1127,8 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         /// ```
         @Override
         public void handle(ClusterFsmEvent event, TransitionRequest<LeaderElectionState, ClusterFsmEvent> tx) {
+            var episode = ctx.handlerEpisode(tx);
+
             switch (event) {
                 case LeaderElectionEvents.PassiveDirectory directory -> tx.transitionTo(new Passive(ctx,
                                                                                                     directory.members()));
@@ -1122,12 +1137,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                 case LeaderOutOfView out -> tx.handle(() -> dropObservedLeader(ctx, out));
                 case ClusterFsmEvent.Shutdown _ -> tx.transitionTo(ctx.stopped());
                 // #3092 I1: a readmitted worker elects from the view the transport last applied, not a replaced one.
-                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storePassiveView(ctx, na));
-                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storePassiveView(ctx, ng));
+                case ClusterFsmEvent.NodeAdded na -> tx.handle(() -> storePassiveView(ctx, episode, na));
+                case ClusterFsmEvent.NodeGone ng -> tx.handle(() -> storePassiveView(ctx, episode, ng));
                 // No re-pull after a view-free removal: it only shrinks the view, so it cannot admit a leader the view
                 // refused before it, and a re-pull would re-admit the held leader it named failed where the storage
                 // kept it (I2's second half, [#holdLeaderToView]).
-                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, removed));
+                case PeerRemovedFromView removed -> tx.handle(() -> storeRemoval(ctx, episode, removed));
                 default -> tx.ignore();
             }
         }
@@ -1159,8 +1174,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///                 /\ named' = None
     ///                 /\ UNCHANGED <<st, kv, pend, obsSeq, base, adm, cluster>>
     /// ```
-    private static void storePassiveView(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
-        storeView(ctx, event);
+    private static void storePassiveView(LeaderElectionContext ctx,
+                                         EpisodeHandle episode,
+                                         ClusterFsmEvent.TopologyChange event) {
+        storeView(ctx, episode, event);
         observeCommittedLeaderFromKv(ctx);
     }
 
@@ -1428,14 +1445,14 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// for the current leader was already applied). KV is the cluster's source of truth — pulling
     /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
-    private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx) {
-        kvCommitToAdopt(ctx).onPresent(commit -> dispatchSelf(ctx, commit));
+    private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx, EpisodeHandle episode) {
+        kvCommitToAdopt(ctx).onPresent(episode::dispatch);
     }
 
     /// The hook form of [#adoptLeaderFromKvIfPresent] (#3587, `FsmState`): the KV leader to adopt is this entry's
     /// follow-up, delivered after the transition completes.
-    private static void followUpKvLeader(LeaderElectionContext ctx) {
-        kvCommitToAdopt(ctx).onPresent(ctx::followUp);
+    private static void followUpKvLeader(LeaderElectionContext ctx, EpisodeHandle episode) {
+        kvCommitToAdopt(ctx).onPresent(episode::followUp);
     }
 
     /// The KV pull's one decision: the committed record the KV-Store holds, with its own sequence (#3588 F1), unless it
@@ -1528,33 +1545,40 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         notifyLeaderChange(ctx);
     }
 
-    private static void handleTopologyChange(LeaderElectionContext ctx, ClusterFsmEvent.TopologyChange event) {
-        if (storeView(ctx, event)) {
-            rescheduleCurrentTick(ctx);
+    private static void handleTopologyChange(LeaderElectionContext ctx,
+                                             EpisodeHandle episode,
+                                             LeaderElectionState owner,
+                                             ClusterFsmEvent.TopologyChange event) {
+        if (storeView(ctx, episode, event)) {
+            rescheduleTick(ctx, episode, owner);
         }
     }
 
     /// #3044: a view-free removal reschedules the election tick only when the storage removed the node, as a dropped
     /// stale topology event does not (#3040).
-    private static void handleRemoval(LeaderElectionContext ctx, PeerRemovedFromView event) {
-        if (storeRemoval(ctx, event)) {
-            rescheduleCurrentTick(ctx);
+    private static void handleRemoval(LeaderElectionContext ctx,
+                                      EpisodeHandle episode,
+                                      LeaderElectionState owner,
+                                      PeerRemovedFromView event) {
+        if (storeRemoval(ctx, episode, event)) {
+            rescheduleTick(ctx, episode, owner);
         }
     }
 
-    /// Reschedules the election tick on the *current* Electing/ReElecting record, replacing any
-    /// prior pending tick on that record's holder. If the FSM is no longer in an electing state,
-    /// the schedule is a no-op (a stale `ProposalSettled.failure` arriving after the FSM has moved
-    /// on must NOT spawn a new orphan timer).
-    private static void rescheduleCurrentTick(LeaderElectionContext ctx) {
-        switch (ctx.fsm().current()) {
-            case Electing e -> scheduleElectionTickInto(ctx, e, e.tickFuture());
-            case ReElecting r -> scheduleElectionTickInto(ctx, r, r.tickFuture());
-            // GUARD 6 (election-trigger swallow): a reschedule requested from a non-electing state
-            // is dropped. Benign when the FSM legitimately moved on (e.g. a leader committed), but
-            // WARN-worthy because if it happens during an active election it leaves no pending tick.
+    /// Reschedules the election tick on `owner`, the Electing/ReElecting record of the handler's own episode,
+    /// replacing any prior pending tick on that record's holder. If the episode is no longer current, the
+    /// schedule is a no-op (a stale `ProposalSettled.failure` arriving after the FSM has moved on must NOT
+    /// spawn a new orphan timer).
+    private static void rescheduleTick(LeaderElectionContext ctx, EpisodeHandle episode, LeaderElectionState owner) {
+        switch (owner) {
+            case Electing e when episode.isCurrent() -> scheduleElectionTickInto(ctx, episode, e.tickFuture());
+            case ReElecting r when episode.isCurrent() -> scheduleElectionTickInto(ctx, episode, r.tickFuture());
+            // GUARD 6 (election-trigger swallow): a reschedule requested by a handler whose episode is no longer
+            // current (or for a non-electing owner) is dropped. Benign when the FSM legitimately moved on (e.g. a
+            // leader committed), but WARN-worthy because if it happens during an active election it leaves no
+            // pending tick.
             default -> log.warn("triggerElection swallowed by GUARD[non-electing-state]: " + "rescheduleCurrentTick from {} — no tick scheduled",
-                                ctx.fsm().current().getClass().getSimpleName());
+                                owner.getClass().getSimpleName());
         }
     }
 
@@ -1571,7 +1595,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// the window where parallel proposals would otherwise collide. A [`ReElecting`] suspect is left out
     /// of the ranking (#2869), so the lowest non-suspect node proposes at the base delay.
     private static ScheduledFuture<?> scheduleStaircaseFirstTick(LeaderElectionContext ctx,
-                                                                 LeaderElectionState owner,
+                                                                 EpisodeHandle episode,
                                                                  String stateLabel,
                                                                  Option<NodeId> suspect) {
         var rank = ctx.rankOfSelf(suspect);
@@ -1586,32 +1610,32 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  ctx.perRankDelay().millis(),
                  ctx.peerObservationInterval().millis());
 
-        return SharedScheduler.schedule(ctx.serializedFor(owner, () -> dispatchSelf(ctx, new ElectionTick())),
+        return SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ElectionTick())),
                                         TimeSpan.timeSpan(delayMs).millis());
     }
 
     /// Schedules a fresh election tick and stores its `ScheduledFuture` into the supplied holder,
-    /// cancelling any prior future the holder owned. Called from [`#rescheduleCurrentTick`]
+    /// cancelling any prior future the holder owned. Called from [`#rescheduleTick`]
     /// during retries (after a failed proposal). The first tick on each entry to
     /// [`Electing`] / [`ReElecting`] uses the rank-staircase delay via
     /// [`#scheduleStaircaseFirstTick`].
     private static void scheduleElectionTickInto(LeaderElectionContext ctx,
-                                                 LeaderElectionState owner,
+                                                 EpisodeHandle episode,
                                                  AtomicReference<ScheduledFuture<?>> holder) {
         var retry = ctx.incrementElectionRetryCount();
         var jitterMs = (long)(ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
 
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        var future = SharedScheduler.schedule(ctx.serializedFor(owner, () -> dispatchSelf(ctx, new ElectionTick())),
+        var future = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ElectionTick())),
                                               TimeSpan.timeSpan(jitterMs).millis());
 
         Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
     }
 
-    private static void trySubmitProposal(LeaderElectionContext ctx, LeaderElectionState owner) {
+    private static void trySubmitProposal(LeaderElectionContext ctx, EpisodeHandle episode, LeaderElectionState owner) {
         ctx.proposalHandler()
-           .onPresent(handler -> submitProposalWith(ctx, owner, handler))
-           .onEmpty(() -> electLocallyOnTick(ctx, owner));
+           .onPresent(handler -> submitProposalWith(ctx, episode, owner, handler))
+           .onEmpty(() -> electLocallyOnTick(ctx, episode, owner));
     }
 
     /// #3092 I3: in local mode (no proposal handler) a tick elects the way every local path does, by committing the
@@ -1622,7 +1646,9 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// \* I3, local mode: a leaderless electing state's tick commits the first node of the stored view and adoptLocalCommit
     /// \* admits it (in view, no sequence gate; the mutant "seqgatelocal" puts it behind the cluster gate local mode never
     /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step); the
-    /// \* sequence-less commit records its sequence through recordAdoptedSequence.
+    /// \* sequence-less commit records its sequence through recordAdoptedSequence. The conjunct st = "electing" is enforced
+    /// \* twice (#3846): the tick runs only through the entry's episode handle, which refuses it unless that entry's identity
+    /// \* is still the Fsm's current entry, and the guard `episode.isCurrent()` re-checks the entry; a stale tick is a no-op.
     /// L_Tick == /\ Local
     ///           /\ st = "electing"
     ///           /\ view # {}
@@ -1635,31 +1661,35 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     ///           /\ named' = None
     ///           /\ UNCHANGED <<view, vseq, kv, pend, obsSeq, base, adm, env, hi, removed, suspect, taken>>
     /// ```
-    private static void electLocallyOnTick(LeaderElectionContext ctx, LeaderElectionState owner) {
-        if (ctx.fsm().current() != owner) {
+    private static void electLocallyOnTick(LeaderElectionContext ctx,
+                                           EpisodeHandle episode,
+                                           LeaderElectionState owner) {
+        if (!episode.isCurrent()) {
             return;
         }
 
         ctx.localLeaderCandidate()
-           .onPresent(leader -> dispatchSelf(ctx,
-                                             new LeaderCommitted(leader)))
-           .onEmpty(() -> rescheduleOnEmptyLocalView(ctx));
+           .onPresent(leader -> episode.dispatch(new LeaderCommitted(leader)))
+           .onEmpty(() -> rescheduleOnEmptyLocalView(ctx, episode, owner));
     }
 
     /// GUARD 1 (election-trigger swallow): local mode with an empty eligible view has no node to elect — reschedule.
-    private static void rescheduleOnEmptyLocalView(LeaderElectionContext ctx) {
+    private static void rescheduleOnEmptyLocalView(LeaderElectionContext ctx,
+                                                   EpisodeHandle episode,
+                                                   LeaderElectionState owner) {
         log.warn("triggerElection swallowed by GUARD[local-empty-view]: local mode with an empty eligible view — "
                 + "rescheduling tick");
-        rescheduleCurrentTick(ctx);
+        rescheduleTick(ctx, episode, owner);
     }
 
     private static void submitProposalWith(LeaderElectionContext ctx,
+                                           EpisodeHandle episode,
                                            LeaderElectionState owner,
                                            LeaderProposalHandler handler) {
         // Each silent early-return path below MUST reschedule the tick, otherwise the FSM
         // gets permanently stuck in Electing/ReElecting: the prior tick fired, no proposal
         // was sent, no `ProposalSettled` will arrive (no proposal in flight), no topology
-        // event will trigger `rescheduleCurrentTick`. Concrete production stall observed
+        // event will trigger `rescheduleTick`. Concrete production stall observed
         // when a single rejoining node sees ghost SWIM peers (cross-cluster gossip) at
         // tick time — `submitProposalWith` exits, FSM never re-fires. Each guard WARNs naming
         // the swallowing condition so a stuck election is diagnosable from logs alone.
@@ -1667,7 +1697,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // GUARD 2 (election-trigger swallow).
             log.warn("triggerElection swallowed by GUARD[empty-topology]: no peers in transport "
                     + "view — skipping proposal, rescheduling tick");
-            rescheduleCurrentTick(ctx);
+            rescheduleTick(ctx, episode, owner);
 
             return;
         }
@@ -1679,7 +1709,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             // GUARD 3 (election-trigger swallow).
             log.warn("triggerElection swallowed by GUARD[empty-candidate-pool]: no eligible "
                     + "candidates — skipping proposal, rescheduling tick");
-            rescheduleCurrentTick(ctx);
+            rescheduleTick(ctx, episode, owner);
 
             return;
         }
@@ -1698,7 +1728,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         if (!ctx.tryStartProposal()) {
             // GUARD 4 (election-trigger swallow): proposal already in flight — DO NOT reschedule.
             // The proposal-timeout future (set in `sendProposal`) will fire
-            // `ProposalSettled.failure`, which triggers `rescheduleCurrentTick` via
+            // `ProposalSettled.failure`, which triggers `rescheduleTick` via
             // `handleProposalSettled`. Rescheduling here would burst-tick during a normal
             // in-flight proposal.
             log.warn("triggerElection swallowed by GUARD[proposal-in-flight]: a proposal is "
@@ -1707,7 +1737,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        if (ctx.fsm().current() != owner) {
+        if (!episode.isCurrent()) {
             // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
             // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
             // sent from the left state would store its timeout on a dead record (so nothing ever
@@ -1717,7 +1747,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        sendProposal(ctx, owner, handler, candidate);
+        sendProposal(ctx, episode, owner, handler, candidate);
     }
 
     /// #2869: drops the [`ReElecting`] suspect from the sorted pool so a silent ex-leader still present in
@@ -1745,6 +1775,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     }
 
     private static void sendProposal(LeaderElectionContext ctx,
+                                     EpisodeHandle episode,
                                      LeaderElectionState owner,
                                      LeaderProposalHandler handler,
                                      NodeId candidate) {
@@ -1752,23 +1783,20 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var viewSeq = ctx.nextViewSequence();
 
         log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}", candidate, viewSeq, epoch);
-        var timeoutFuture = SharedScheduler.schedule(ctx.serializedFor(owner,
-                                                                       () -> dispatchSelf(ctx,
-                                                                                          new ProposalSettled(candidate,
-                                                                                                              false,
-                                                                                                              "timeout@epoch=" + epoch))),
+        var timeoutFuture = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                                                   false,
+                                                                                                                   "timeout@epoch=" + epoch))),
                                                      ctx.proposalTimeout());
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
-               .onSuccess(ctx.serialized(_ -> dispatchSelf(ctx,
-                                                           new ProposalSettled(candidate,
-                                                                               true,
-                                                                               "submitted@epoch=" + epoch))))
-               .onFailure(ctx.serialized(cause -> dispatchSelf(ctx,
-                                                               new ProposalSettled(candidate,
-                                                                                   false,
-                                                                                   cause.message() + "@epoch=" + epoch))));
+               .onSuccess(episode.serialized(_ -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                       true,
+                                                                                       "submitted@epoch=" + epoch))))
+               .onFailure(episode.serialized(cause -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                           false,
+                                                                                           cause.message()
+                                                                                          + "@epoch=" + epoch))));
     }
 
     /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that
@@ -1794,7 +1822,10 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
     }
 
-    private static void handleProposalSettled(LeaderElectionContext ctx, ProposalSettled event) {
+    private static void handleProposalSettled(LeaderElectionContext ctx,
+                                              EpisodeHandle episode,
+                                              LeaderElectionState owner,
+                                              ProposalSettled event) {
         if (!ctx.proposalInFlight()) {
             // GUARD 5 (election-trigger swallow): a ProposalSettled arrived after the in-flight
             // flag was already cleared (a prior settle / state exit handled it). The settle is
@@ -1822,7 +1853,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         ctx.clearProposalInFlight();
         log.debug("Proposal failed ({}) — retry scheduled", event.detail());
         ctx.incrementStuckElectionCount();
-        rescheduleCurrentTick(ctx);
+        rescheduleTick(ctx, episode, owner);
     }
 
     private static void cancelFuture(AtomicReference<ScheduledFuture<?>> holder) {
