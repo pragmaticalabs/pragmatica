@@ -124,7 +124,7 @@ class QuicDialAttemptTest {
             awaitTrue(() -> transitions(lowNode.journal(), high, PeerState.CAUSE_EVICT_STALE_CONNECTING) >= evictionsSoFar,
                       "attempt " + attempt + " times out while the peer is down");
             // Let the released attempt's own failure land before the next dial starts.
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(ATTEMPT_QUIET_MS));
+            Pause.pause(Duration.ofMillis(ATTEMPT_QUIET_MS));
         }
         assertThat(transitions(lowNode.journal(), high, PeerState.CAUSE_BEGIN_CONNECTING))
             .as("arming: every outage attempt really started").isEqualTo(OUTAGE_ATTEMPTS);

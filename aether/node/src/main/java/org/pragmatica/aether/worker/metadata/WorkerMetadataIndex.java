@@ -244,6 +244,7 @@ public final class WorkerMetadataIndex {
         return switch (aether) {
             case AetherKey.NodeArtifactKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.NodeRoutesKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
+            case AetherKey.DeclaredRouteKey entry -> Set.of(artifact(entry.artifact()));
             case AetherKey.SliceNodeKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.SliceDesiredKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));
             case AetherKey.SliceObservedKey entry -> Set.of(node(entry.nodeId()), artifact(entry.artifact()));

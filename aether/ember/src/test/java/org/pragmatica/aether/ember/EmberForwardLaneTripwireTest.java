@@ -5,9 +5,9 @@
 package org.pragmatica.aether.ember;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +20,7 @@ import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.aether.slice.generation.Epoch;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -130,7 +131,7 @@ class EmberForwardLaneTripwireTest {
         network.send(target, bigCatchup(sender.self()));
         for (var i = 0; i < SMALL_MESSAGES; i++) {
             network.send(target, small(sender.self(), i));
-            LockSupport.parkNanos(SPACING_NANOS);
+            Pause.pause(Duration.ofNanos(SPACING_NANOS));
         }
         sleepQuietly(4_000L);
 

@@ -4,6 +4,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -1581,6 +1582,62 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The declared state of one HTTP route of one artifact (#3389): the leader writes it from the blueprint's declared
+    /// routes, so a request for a route no node has published yet can be told "declared, loading" from "never declared".
+    /// A [RuntimeKey]: the table is derived from the blueprint, which a backup restores, so a restored cluster re-declares it
+    /// instead of replaying a stale state.
+    ///
+    /// Key text: `declared-route/<artifact>/<METHOD>/<pathTemplate>`. The artifact and the method hold no `/`, so the path
+    /// template is exactly the rest of the text and may carry any character, `/` and `{id}` included: parsing is the
+    /// factory over the three split parts, so the text round-trips exactly or the factory refuses the input.
+    record DeclaredRouteKey(Artifact artifact, String httpMethod, String pathTemplate) implements RuntimeKey {
+        private static final String PREFIX = "declared-route/";
+        private static final Pattern HTTP_METHOD = Pattern.compile("[A-Za-z]+");
+
+        @Override
+        public String asString() {
+            return PREFIX + artifact.asString() + "/" + httpMethod + "/" + pathTemplate;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<DeclaredRouteKey> declaredRouteKey(Artifact artifact,
+                                                                String httpMethod,
+                                                                String pathTemplate) {
+            return Result.all(Verify.ensure(httpMethod,
+                                            HTTP_METHOD.asMatchPredicate(),
+                                            DECLARED_ROUTE_KEY_FORMAT_ERROR),
+                              Verify.ensure(pathTemplate, Verify.Is::notBlank, DECLARED_ROUTE_KEY_FORMAT_ERROR))
+                         .map((method, path) -> new DeclaredRouteKey(artifact, method, path));
+        }
+
+        public static Result<DeclaredRouteKey> declaredRouteKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DECLARED_ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var artifactEnd = content.indexOf('/');
+            var methodEnd = artifactEnd == -1
+                            ? -1
+                            : content.indexOf('/', artifactEnd + 1);
+
+            if (artifactEnd < 1 || methodEnd == -1) {
+                return DECLARED_ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var method = content.substring(artifactEnd + 1, methodEnd);
+            var path = content.substring(methodEnd + 1);
+
+            return Artifact.artifact(content.substring(0, artifactEnd)).flatMap(artifact -> declaredRouteKey(artifact,
+                                                                                                             method,
+                                                                                                             path));
+        }
+    }
+
     /// The fenced departure record of one node id: DEPARTED or ADMITTED, with the epoch and process it names
     /// (spec R-4.3.0).
     record NodeDepartureKey(NodeId nodeId) implements RuntimeKey {
@@ -1674,6 +1731,8 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> DEPLOYMENT_APPLY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment-apply key format: %s");
 
     Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
+
+    Fn1<Cause, String> DECLARED_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid declared-route key format: %s");
 
     Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
 
@@ -2608,8 +2667,17 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     Fn1<Cause, String> BACKUP_RESTORE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid backup-restore key format: %s");
 
-    record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey {
+    /// GUARDED by the committed [StreamConfigKey] of its stream (#3041): the applier admits a write here only while the
+    /// stream is committed and the write names that very life (its token equals the config's incarnation). A stream
+    /// that was deleted, or deleted and recreated, therefore refuses every write minted under its earlier life, which
+    /// is what lets the records of a dead life be reclaimed without reopening the race an epoch tombstone closes.
+    record ConsumerGroupKey(String groupId, String streamName, int partition) implements RuntimeKey, AssignmentGuarded {
         private static final String PREFIX = "consumer-group/";
+
+        @Override
+        public Object guardKey() {
+            return StreamConfigKey.streamConfigKey(streamName);
+        }
 
         @Override
         public String asString() {

@@ -9,8 +9,9 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.locks.LockSupport;
 import java.util.stream.IntStream;
+
+import org.pragmatica.testing.Pause;
 
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -122,7 +123,7 @@ class StreamOwnerKillWritesResumeTest extends AbstractMultiPartitionStream {
         while (System.nanoTime() < deadline && served.size() < PARTITIONS) {
             for (var i = 0; i < PARTITIONS; i++) {
                 publish(survivorPort, seq++, PUBLISH_TIMEOUT);
-                LockSupport.parkNanos(PUBLISH_PACE_NANOS);
+                Pause.pause(Duration.ofNanos(PUBLISH_PACE_NANOS));
             }
 
             served.clear();

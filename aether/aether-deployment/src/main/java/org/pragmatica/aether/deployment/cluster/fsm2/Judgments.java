@@ -7,19 +7,25 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 
 
 /// The durable judgments as notified (spec 4.2): the committed `ArtifactJudgmentValue` is a fact the reconcile reads
 /// (the permanent mark, the retry counts, the exclusions). Every other key family the FSM does not react to is indexed
-/// and otherwise ignored.
+/// and otherwise ignored. A committed declared-route row requests the reconcile too (#3389): a goal held by the
+/// declared-row gate (`Outbox.stands`) is derived again from the mirror.
 public sealed interface Judgments {
     static ClusterModel onPut(ClusterModel m, Ctx ctx, AetherKey key, AetherValue value) {
         Indexer.indexPut(m, ctx, key, value);
 
-        return key instanceof ArtifactJudgmentKey
-               ? Reconcile.request(m, ctx)
-               : m;
+        return switch (key) {
+            case ArtifactJudgmentKey k -> Reconcile.request(m, ctx);
+            case NodeRoutesKey k -> Routes.onNodeRoutes(m, ctx, k.artifact());
+            case DeclaredRouteKey k -> Reconcile.request(m, ctx);
+            default -> m;
+        };
     }
 
     static ClusterModel onRemove(ClusterModel m, Ctx ctx, AetherKey key) {

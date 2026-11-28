@@ -162,13 +162,13 @@ class ManagementCompositeAndIdParseStatusTest {
         var clusterNode = mock(ClusterNode.class);
 
         when(clusterNode.apply(any())).thenReturn(Promise.success(List.of()));
-        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode, registry, () -> Epoch.epoch(1L, 1L, 0L));
+        var coordinator = ConsumerGroupCoordinator.consumerGroupCoordinator(clusterNode, registry, () -> Epoch.epoch(1L, 1L, 0L), _ -> Option.some(1L));
 
         coordinator.onLeaderChange(new LeaderChange(Option.some(self), true));
         coordinator.joinGroup("g1", streamName, 4, "c1", self);
         coordinator.joinGroup("g1", streamName, 4, "c2", self);
         registry.onConsumerGroupPut(new ValuePut<>(new KVCommand.Put<>(new ConsumerGroupKey("g1", streamName, 0),
-                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(self, "c2", Epoch.epoch(1L, 5L, 0L))),
+                                                                       (AetherValue) ConsumerGroupValue.consumerGroupValue(self, "c2", Epoch.epoch(1L, 5L, 0L), 1L)),
                                                    Option.none()));
         return coordinator;
     }

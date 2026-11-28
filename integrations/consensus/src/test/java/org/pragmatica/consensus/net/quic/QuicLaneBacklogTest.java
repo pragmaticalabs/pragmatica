@@ -213,7 +213,7 @@ class QuicLaneBacklogTest {
         for (int i = 0; i < frames; i++) {
             network.writeIfWritableForTest(ch, new byte[]{1}, PEER, StreamType.CONSENSUS);
             maxHeld = Math.max(maxHeld, network.heldFrameCountForTests(ch));
-            LockSupport.parkNanos(POLL_NANOS);
+            Pause.pause(Duration.ofNanos(POLL_NANOS));
         }
 
         feeding.set(false);

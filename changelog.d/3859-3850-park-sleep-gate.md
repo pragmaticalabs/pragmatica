@@ -1,0 +1,2 @@
+### Fixed (2026-11-28 — #3850: the PARK_SLEEP gate accepted count-only park loops)
+- **The park-sleep gate now requires a deadline or state exit that guards the park** (#3850). A `for` loop bounded only by a counter, or a `while (true)` with no exit, no longer passes as a bounded wait; a negative-observation wait goes through `Pause`. Eleven test sites were converted to `Pause.pause` or deadline loops. [verified: `SingleParkSleepTest` rows red on the old gate; `FlakeScanTest` census at 0 hits]

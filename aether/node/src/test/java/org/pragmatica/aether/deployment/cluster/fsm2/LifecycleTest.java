@@ -33,6 +33,8 @@ class LifecycleTest {
         h.step(new ClusterInput.KvPut(new SliceTargetKey(ORDERS.base()), target));
         h.step(new ClusterInput.KvRemove(new SliceTargetKey(BILLING.base())));
         assertThat(((ClusterState.Rebuilding) h.state).held()).as("held, not handled on an empty model").hasSize(2);
+        // The row is in the store, as the held KvPut says: the goal transaction it derives witnesses it (#3836), and a refusal rebuilds from the store.
+        h.seedQuietly(new SliceTargetKey(ORDERS.base()), target);
         h.drain();
         assertThat(h.isActive()).isTrue();
         assertThat(h.model().targets.get(ORDERS.base()).isPresent()).as("the input that arrived during Rebuild is in the model")

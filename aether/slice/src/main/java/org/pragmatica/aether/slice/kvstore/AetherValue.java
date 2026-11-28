@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -467,32 +468,57 @@ public sealed interface AetherValue {
     /// blueprint's describes an EARLIER apply of the same id, and `ClusterDeploymentState` reads it as
     /// "this apply is not yet terminal". [#NO_ATTEMPT] is the value of the convenience forms, which
     /// production publish paths never use.
-    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly, String attemptId) implements AetherValue {
+    ///
+    /// `declaredRoutes` (#3389) names the HTTP routes each artifact of the blueprint declares, from the slices' topologies at
+    /// preflight; the leader declares them in the route table ([DeclaredRouteValue]). The convenience forms leave it empty. It
+    /// is a wire field with no compatibility shim: pre-GA, a mixed-version cluster is not supported.
+    record AppBlueprintValue(ExpandedBlueprint blueprint,
+                             boolean registerOnly,
+                             String attemptId,
+                             Map<Artifact, List<DeclaredRoute>> declaredRoutes) implements AetherValue {
         /// The attempt id of a value written without one. Two such values attribute to each other.
         public static final String NO_ATTEMPT = "";
+
+        public AppBlueprintValue {
+            declaredRoutes = copyOfRoutes(declaredRoutes);
+        }
 
         /// Backward-compat constructor — pre-existing call sites pass blueprint only;
         /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
         public AppBlueprintValue(ExpandedBlueprint blueprint) {
-            this(blueprint, false, NO_ATTEMPT);
+            this(blueprint, false, NO_ATTEMPT, Map.of());
         }
 
         public AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
-            this(blueprint, registerOnly, NO_ATTEMPT);
+            this(blueprint, registerOnly, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint, false, NO_ATTEMPT);
+            return new AppBlueprintValue(blueprint, false, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
-            return new AppBlueprintValue(blueprint, registerOnly, NO_ATTEMPT);
+            return new AppBlueprintValue(blueprint, registerOnly, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint,
                                                           boolean registerOnly,
                                                           String attemptId) {
-            return new AppBlueprintValue(blueprint, registerOnly, attemptId);
+            return new AppBlueprintValue(blueprint, registerOnly, attemptId, Map.of());
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint,
+                                                          boolean registerOnly,
+                                                          String attemptId,
+                                                          Map<Artifact, List<DeclaredRoute>> declaredRoutes) {
+            return new AppBlueprintValue(blueprint, registerOnly, attemptId, declaredRoutes);
+        }
+
+        private static Map<Artifact, List<DeclaredRoute>> copyOfRoutes(Map<Artifact, List<DeclaredRoute>> routes) {
+            return routes.entrySet()
+                         .stream()
+                         .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                               entry -> List.copyOf(entry.getValue())));
         }
     }
 
@@ -3238,15 +3264,33 @@ public sealed interface AetherValue {
     /// the counter, so two distinct rebalances never share an epoch. `assignedAt` is for operator diagnosis only,
     /// never for ordering.
     ///
-    /// @param epoch the rebalance this assignment belongs to; strictly increases from one rebalance to the next
-    record ConsumerGroupValue(NodeId assignedTo, String consumerId, long assignedAt, Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+    /// #3041: also [AssignmentTokenBearing] on `streamIncarnation`, the life of the stream the rebalance was derived for.
+    /// [AetherKey.ConsumerGroupKey] is guarded by the stream's committed [StreamConfigValue], so the applier admits this
+    /// value only while that very life is committed: a batch derived before the stream was deleted, or recreated, is
+    /// refused whatever its epoch.
+    ///
+    /// @param epoch             the rebalance this assignment belongs to; strictly increases from one rebalance to the next
+    /// @param streamIncarnation the committed incarnation of the stream life this assignment belongs to
+    record ConsumerGroupValue(NodeId assignedTo,
+                              String consumerId,
+                              long assignedAt,
+                              Epoch epoch,
+                              long streamIncarnation) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         @Override
         public Epoch fenceEpoch() {
             return epoch;
         }
 
-        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo, String consumerId, Epoch epoch) {
-            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch);
+        @Override
+        public Object guardToken() {
+            return streamIncarnation;
+        }
+
+        public static ConsumerGroupValue consumerGroupValue(NodeId assignedTo,
+                                                            String consumerId,
+                                                            Epoch epoch,
+                                                            long streamIncarnation) {
+            return new ConsumerGroupValue(assignedTo, consumerId, System.currentTimeMillis(), epoch, streamIncarnation);
         }
     }
 
@@ -3254,28 +3298,45 @@ public sealed interface AetherValue {
     /// compares only against a committed value), so a rebalance batch derived before the last member left, committing
     /// after the clear, would resurrect the departed owner. The clear therefore WRITES this value at its freshly minted
     /// epoch for every partition: it shares [ConsumerGroupValue]'s fence kind (an `Epoch`), so the applier refuses any
-    /// older assignment `Put` over it, and the registry reads it as "no owner". It is reclaimed by the next rebalance of
-    /// the group, which mints a higher epoch and overwrites it; a group that never rebalances again keeps one such
-    /// entry per partition.
+    /// older assignment `Put` over it, and the registry reads it as "no owner".
     ///
-    /// @param epoch the clear this tombstone belongs to; strictly newer than every assignment it releases
-    record ConsumerGroupTombstone(Epoch epoch) implements AetherValue, EpochBearing<Epoch> {
+    /// #3041: the tombstone is the record that refuses an older join while its life is committed. Its
+    /// `streamIncarnation` names the stream life it was written for, and the key's stream guard refuses every write of
+    /// a life that is not the committed one: once the stream is deleted, or recreated as a new life, no older-epoch
+    /// join of the old life can commit, so the tombstone of a dead life refuses nothing the guard does not and may be
+    /// removed. While the life is committed it stays (the epoch fence refuses the older join) until the next
+    /// rebalance overwrites it.
+    ///
+    /// @param epoch             the clear this tombstone belongs to; strictly newer than every assignment it releases
+    /// @param streamIncarnation the committed incarnation of the stream life this tombstone belongs to
+    record ConsumerGroupTombstone(Epoch epoch, long streamIncarnation) implements AetherValue, EpochBearing<Epoch>, AssignmentTokenBearing {
         @Override
         public Epoch fenceEpoch() {
             return epoch;
         }
 
-        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch) {
-            return new ConsumerGroupTombstone(epoch);
+        @Override
+        public Object guardToken() {
+            return streamIncarnation;
+        }
+
+        public static ConsumerGroupTombstone consumerGroupTombstone(Epoch epoch, long streamIncarnation) {
+            return new ConsumerGroupTombstone(epoch, streamIncarnation);
         }
     }
 
     /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
     /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
     /// the removal of the old life has applied.
-    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced {
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced, AssignmentTokenBearing {
         @Override
         public long fenceIncarnation() {
+            return config.incarnation();
+        }
+
+        /// #3041: the authority a [AetherKey.ConsumerGroupKey] write is checked against: the committed life of the stream.
+        @Override
+        public Object guardToken() {
             return config.incarnation();
         }
 
@@ -4947,6 +5008,23 @@ public sealed interface AetherValue {
             retries = Map.copyOf(retries);
             unresponsive = Map.copyOf(unresponsive);
             judgedAttempts = Collections.unmodifiableSortedSet(new TreeSet<>(judgedAttempts));
+        }
+    }
+
+    /// The declared state of one route of one artifact, under [AetherKey.DeclaredRouteKey] (#3389): which blueprint and which
+    /// attempt declared it, and its [RouteState]. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the
+    /// committed row, so a late `Published` can never overwrite `Failed`.
+    record DeclaredRouteValue(String blueprintId, String attemptId, RouteState state) implements AetherValue, LeaderAuthorized {
+        public static DeclaredRouteValue declaredRouteValue(String blueprintId, String attemptId, RouteState state) {
+            return new DeclaredRouteValue(blueprintId, attemptId, state);
+        }
+    }
+
+    /// One route a blueprint declares for one of its artifacts (#3389): the HTTP method and the path template, as the slice's
+    /// topology states them. The element of [AppBlueprintValue#declaredRoutes].
+    record DeclaredRoute(String httpMethod, String pathTemplate) {
+        public static DeclaredRoute declaredRoute(String httpMethod, String pathTemplate) {
+            return new DeclaredRoute(httpMethod, pathTemplate);
         }
     }
 
