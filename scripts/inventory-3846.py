@@ -27,7 +27,8 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP_DIRS = {".m2-local", "target", ".git", "node_modules", ".idea"}
-SCAN_SOURCES = {"SourceScans.java", "LeaderSinkScanTest.java", "LeaderOrderPathScanTest.java", "FsmOrderPathScanTest.java"}
+SCAN_SOURCES = {"SourceScans.java", "LeaderSinkScanTest.java", "LeaderOrderPathScanTest.java", "FsmOrderPathScanTest.java",
+                "LeaderTripwireRowsTest.java", "LeaderTxFreeArmTripwireTest.java", "LeaderAuthorityCensusTest.java", "AuthorityCensus.java"}
 
 CONSENSUS = "integrations/consensus/"
 LEADER_MAIN = CONSENSUS + "src/main/java/org/pragmatica/consensus/leader/"
