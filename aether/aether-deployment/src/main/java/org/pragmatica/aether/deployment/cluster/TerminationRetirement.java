@@ -266,14 +266,13 @@ public interface TerminationRetirement {
     private static Option<KVCommand.LeaderTransaction<AetherKey, AetherValue>> transaction(RetirementUnit unit,
                                                                                            LeaderValue leader) {
         var removals = unit.removals();
+        var transactionId = "retire:" + unit.node().id() + ":" + UUID.randomUUID();
 
-        return Option.from(removals.stream()
-                                   .findFirst())
-                     .map(first -> new KVCommand.LeaderTransaction<>(first.key(),
-                                                                     "retire:" + unit.node().id() + ":" + UUID.randomUUID(),
-                                                                     leader,
-                                                                     unit.witnesses(),
-                                                                     removals));
+        return Option.from(removals.stream().findFirst()).map(first -> new KVCommand.LeaderTransaction<>(first.key(),
+                                                                                                         transactionId,
+                                                                                                         leader,
+                                                                                                         unit.witnesses(),
+                                                                                                         removals));
     }
 
     private static Promise<Unit> submit(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
