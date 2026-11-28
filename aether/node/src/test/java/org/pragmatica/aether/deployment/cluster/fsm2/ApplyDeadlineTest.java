@@ -447,7 +447,7 @@ class ApplyDeadlineTest {
         var plain = blueprint(APP, false, ATTEMPT, slice(ORDERS, 1, 1, Set.of()));
         var h = harness(DeploymentAtomicity.ALL_OR_NOTHING, UnaryOperator.identity());
 
-        publish(h, new AppBlueprintValue(ExpandedBlueprint.expandedBlueprint(ID, plain.blueprint().loadOrder(), Option.some(toml)), false, ATTEMPT),
+        publish(h, AppBlueprintValue.appBlueprintValue(ExpandedBlueprint.expandedBlueprint(ID, plain.blueprint().loadOrder(), Option.some(toml)), false, ATTEMPT),
                 Option.none());
         h.seed(new SchemaVersionKey("ds"), schema(SchemaStatus.PENDING));
         h.advanceBySeconds(16 * 60);

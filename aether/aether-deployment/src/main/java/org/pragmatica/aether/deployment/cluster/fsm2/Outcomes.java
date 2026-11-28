@@ -388,7 +388,10 @@ public sealed interface Outcomes {
         var restoredId = restored.blueprint().id();
 
         if (restoredId.equals(id)) {
-            var value = new AppBlueprintValue(restored.blueprint(), restored.registerOnly(), attempt);
+            var value = AppBlueprintValue.appBlueprintValue(restored.blueprint(),
+                                                            restored.registerOnly(),
+                                                            attempt,
+                                                            restored.declaredRoutes());
 
             mutations.add(new KVCommand.Mutation<>(new AppBlueprintKey(id),
                                                    rolledBack.map(v -> (AetherValue) v),

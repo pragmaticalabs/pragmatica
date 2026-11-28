@@ -15,6 +15,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -467,32 +468,57 @@ public sealed interface AetherValue {
     /// blueprint's describes an EARLIER apply of the same id, and `ClusterDeploymentState` reads it as
     /// "this apply is not yet terminal". [#NO_ATTEMPT] is the value of the convenience forms, which
     /// production publish paths never use.
-    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly, String attemptId) implements AetherValue {
+    ///
+    /// `declaredRoutes` (#3389) names the HTTP routes each artifact of the blueprint declares, from the slices' topologies at
+    /// preflight; the leader declares them in the route table ([DeclaredRouteValue]). The convenience forms leave it empty. It
+    /// is a wire field with no compatibility shim: pre-GA, a mixed-version cluster is not supported.
+    record AppBlueprintValue(ExpandedBlueprint blueprint,
+                             boolean registerOnly,
+                             String attemptId,
+                             Map<Artifact, List<DeclaredRoute>> declaredRoutes) implements AetherValue {
         /// The attempt id of a value written without one. Two such values attribute to each other.
         public static final String NO_ATTEMPT = "";
+
+        public AppBlueprintValue {
+            declaredRoutes = copyOfRoutes(declaredRoutes);
+        }
 
         /// Backward-compat constructor — pre-existing call sites pass blueprint only;
         /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
         public AppBlueprintValue(ExpandedBlueprint blueprint) {
-            this(blueprint, false, NO_ATTEMPT);
+            this(blueprint, false, NO_ATTEMPT, Map.of());
         }
 
         public AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
-            this(blueprint, registerOnly, NO_ATTEMPT);
+            this(blueprint, registerOnly, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint, false, NO_ATTEMPT);
+            return new AppBlueprintValue(blueprint, false, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
-            return new AppBlueprintValue(blueprint, registerOnly, NO_ATTEMPT);
+            return new AppBlueprintValue(blueprint, registerOnly, NO_ATTEMPT, Map.of());
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint,
                                                           boolean registerOnly,
                                                           String attemptId) {
-            return new AppBlueprintValue(blueprint, registerOnly, attemptId);
+            return new AppBlueprintValue(blueprint, registerOnly, attemptId, Map.of());
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint,
+                                                          boolean registerOnly,
+                                                          String attemptId,
+                                                          Map<Artifact, List<DeclaredRoute>> declaredRoutes) {
+            return new AppBlueprintValue(blueprint, registerOnly, attemptId, declaredRoutes);
+        }
+
+        private static Map<Artifact, List<DeclaredRoute>> copyOfRoutes(Map<Artifact, List<DeclaredRoute>> routes) {
+            return routes.entrySet()
+                         .stream()
+                         .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
+                                                               entry -> List.copyOf(entry.getValue())));
         }
     }
 
@@ -4982,6 +5008,23 @@ public sealed interface AetherValue {
             retries = Map.copyOf(retries);
             unresponsive = Map.copyOf(unresponsive);
             judgedAttempts = Collections.unmodifiableSortedSet(new TreeSet<>(judgedAttempts));
+        }
+    }
+
+    /// The declared state of one route of one artifact, under [AetherKey.DeclaredRouteKey] (#3389): which blueprint and which
+    /// attempt declared it, and its [RouteState]. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation expecting the
+    /// committed row, so a late `Published` can never overwrite `Failed`.
+    record DeclaredRouteValue(String blueprintId, String attemptId, RouteState state) implements AetherValue, LeaderAuthorized {
+        public static DeclaredRouteValue declaredRouteValue(String blueprintId, String attemptId, RouteState state) {
+            return new DeclaredRouteValue(blueprintId, attemptId, state);
+        }
+    }
+
+    /// One route a blueprint declares for one of its artifacts (#3389): the HTTP method and the path template, as the slice's
+    /// topology states them. The element of [AppBlueprintValue#declaredRoutes].
+    record DeclaredRoute(String httpMethod, String pathTemplate) {
+        public static DeclaredRoute declaredRoute(String httpMethod, String pathTemplate) {
+            return new DeclaredRoute(httpMethod, pathTemplate);
         }
     }
 

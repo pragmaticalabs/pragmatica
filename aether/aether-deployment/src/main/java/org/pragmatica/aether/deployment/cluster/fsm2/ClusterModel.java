@@ -15,6 +15,7 @@ import org.pragmatica.aether.config.cluster.CommunityPlacement;
 import org.pragmatica.aether.config.cluster.CommunityPolicy;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.DeclaredRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
@@ -22,6 +23,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactJudgmentValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
@@ -128,6 +130,13 @@ public final class ClusterModel {
     PMap<NodeId, ActivationDirectiveValue> directives = PMap.empty(scans);
     PMap<SlicePair, NodeRoutesValue> routes = PMap.empty(scans);
     PMap<NodeId, PSet<Artifact>> routesByNode = PMap.empty(scans);
+    /// #3389: the nodes that publish routes for each artifact: the evidence of the `Declared` -> `Published` flip (`Routes`).
+    PMap<Artifact, PSet<NodeId>> routesByArtifact = PMap.empty(scans);
+    /// #3389: the committed declared-route rows by their own key, the keys of each artifact, and the artifacts each blueprint owns rows
+    /// for. Written only by the leader (`Routes`); the mirror of the rows is the `expected` of every route mutation and guard.
+    PMap<DeclaredRouteKey, DeclaredRouteValue> declaredRoutes = PMap.empty(scans);
+    PMap<Artifact, PSet<DeclaredRouteKey>> declaredByArtifact = PMap.empty(scans);
+    PMap<BlueprintId, PSet<Artifact>> declaredByOwner = PMap.empty(scans);
     /// #1337 (R-CF.15): the committed node-scoped topic rows (`TopicSubscriptionKey`, `TopicPublisherKey`) by their own key, and the keys of
     /// each node's rows, so a departure removes a departed node's rows at their exact values.
     PMap<AetherKey, AetherValue> topicRows = PMap.empty(scans);
@@ -300,6 +309,10 @@ public final class ClusterModel {
         c.directives = directives.rebound(meter);
         c.routes = routes.rebound(meter);
         c.routesByNode = routesByNode.rebound(meter);
+        c.routesByArtifact = routesByArtifact.rebound(meter);
+        c.declaredRoutes = declaredRoutes.rebound(meter);
+        c.declaredByArtifact = declaredByArtifact.rebound(meter);
+        c.declaredByOwner = declaredByOwner.rebound(meter);
         c.topicRows = topicRows.rebound(meter);
         c.topicRowsByNode = topicRowsByNode.rebound(meter);
         c.nodePlacements = nodePlacements.rebound(meter);
@@ -571,6 +584,7 @@ public final class ClusterModel {
         FAILURE,
         TARGETS,
         BLUEPRINT_REMOVAL,
+        ROUTES,
         DEPARTURE,
         INFERRED_DEPARTURE,
         ADMISSION,

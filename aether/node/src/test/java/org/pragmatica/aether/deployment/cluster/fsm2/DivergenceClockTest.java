@@ -60,8 +60,12 @@ class DivergenceClockTest {
         var inputs = new ClusterInput[5];
 
         for (var i = 0; i < 5; i++) {
-            inputs[i] = new ClusterInput.KvPut(new SliceTargetKey(artifact("org.example:s" + i + ":1.0.0").base()),
-                                               SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1));
+            var key = new SliceTargetKey(artifact("org.example:s" + i + ":1.0.0").base());
+            var value = SliceTargetValue.sliceTargetValue(ORDERS.version(), 1, 1);
+
+            // The row is in the store, as the delivered KvPut says: the goal transaction it derives witnesses it (#3836).
+            h.seedQuietly(key, value);
+            inputs[i] = new ClusterInput.KvPut(key, value);
         }
 
         h.clearLog();

@@ -11,7 +11,7 @@ import java.util.Map;
 /// reconcile; the pass re-derives everything that should be true from the model. A pass runs only while the committed
 /// leader names this node (R-5.7.1 (a)).
 ///
-/// Order: (1) awaited targets, (2) intake re-drive, (2b) strays, (2c) the activation re-derive (CF-4), (2d) the schema stall check (#2773), (3) placement, (4) drain loops, (5) community states,
+/// Order: (1) awaited targets, (2) intake re-drive, (2a) declared-route re-drive (#3389), (2b) strays, (2c) the activation re-derive (CF-4), (2d) the schema stall check (#2773), (3) placement, (4) drain loops, (5) community states,
 /// (6) orphans, (6b) orphan targets (CF-8), (7) the departure backstop, (8) divergence, (9) completion repair, (10) garbage collection.
 public sealed interface Reconcile {
     /// R-3.1.5: at most one reconcile is queued; the flag is cleared when it is handled.
@@ -28,7 +28,10 @@ public sealed interface Reconcile {
     /// \* Reconcile pass (Timer TICK -> Reconcile.java run): level-triggered raises (once per episode, the family set
     /// \* gates them), level-triggered closes of subjects in the family set (Failures.java closeSettled; Strays.java),
     /// \* Warnings.reconcile marks dirty (Warnings.reconcile, Reconcile.run), and the desired/observed
-    /// \* reconcile derives a goal intent when the desired row is off target. Not while suspended (Lifecycle.isSuspended).
+    /// \* reconcile derives a goal intent when the desired row is off target. Routes.sweep (Reconcile.run, #3389, #3836) re-drives the
+    /// \* declared-route rows and the goal transactions that witness them (the target row, the owner's blueprint, the rows): the model
+    /// \* carries them in the one goal intent gi and the one in-flight goal gInfl[n] and has no route rows, so a refused witness is a
+    /// \* refused goal write, which gi re-derives. Not while suspended (Lifecycle.isSuspended).
     /// Tick(n) ==
     ///   /\ fsm[n] = "Active" /\ ~Suspended(n)   \* Reconcile.run returns at once while suspended
     ///   /\ LET raises == IF WarnOK(n) THEN {l \in LevelFam : l \in cond /\ l \notin warned[n]} ELSE {}
@@ -51,6 +54,7 @@ public sealed interface Reconcile {
         Outbox.replayAwaiting(m);
         Blueprints.sweepAwaited(m, ctx);
         Blueprints.redrive(m, ctx);
+        Routes.sweep(m, ctx);
         Strays.sweep(m, ctx);
         Failures.sweep(m, ctx);
         Slices.reactivate(m, ctx);

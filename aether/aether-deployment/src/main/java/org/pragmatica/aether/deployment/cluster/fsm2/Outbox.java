@@ -448,13 +448,33 @@ public sealed interface Outbox {
                : Option.some(TxDraft.draft(SubmitKind.GOALS,
                                            mutations.getFirst().key(),
                                            mutations)
-                                    .withGuards(live.stream()
-                                                    .map(entry -> observedGuard(entry.getKey(),
-                                                                                entry.getValue().guard()))
-                                                    .toList())
+                                    .withGuards(Stream.concat(live.stream()
+                                                                  .map(entry -> observedGuard(entry.getKey(),
+                                                                                              entry.getValue().guard())),
+                                                              gateGuards(m, live))
+                                                      .toList())
                                     .withPairs(live.stream().map(Map.Entry::getKey).collect(Collectors.toSet()))
                                     .withNode(node)
                                     .withOnAccepted(started(ctx, node, live)));
+    }
+
+    /// #3389, #3836: the witnesses of each live LOADED or ACTIVE goal on every fact its gate reads (the SliceTarget row, the owner's blueprint and
+    /// the declared rows of its artifact, [Routes#goalWitnesses]): the goal is refused if one moved between the decision and the commit. Pairs of one
+    /// blueprint share its witness, which is written once. An UNLOADED goal carries none.
+    private static Stream<KVCommand.ReadWitness<AetherKey>> gateGuards(ClusterModel m,
+                                                                       List<Map.Entry<SlicePair, GoalIntent>> live) {
+        return live.stream()
+                   .filter(Outbox::gated)
+                   .flatMap(entry -> Routes.goalWitnesses(Routes.mirror(m),
+                                                          entry.getKey().artifact())
+                                           .stream())
+                   .distinct();
+    }
+
+    /// A goal that loads: LOADED or ACTIVE. An UNLOADED goal is never gated on the declared rows (it only removes).
+    private static boolean gated(Map.Entry<SlicePair, GoalIntent> entry) {
+        return entry.getValue()
+                    .goal() != SliceGoal.UNLOADED;
     }
 
     /// A fresh LOADED goal announces `DeploymentStarted` when its transaction is accepted, and so does any event its intent carries.
@@ -490,7 +510,17 @@ public sealed interface Outbox {
     private static boolean stands(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
         return stillCurrent(m,
                             entry.getKey(),
-                            entry.getValue().guard()) && !promotesRetired(m, entry);
+                            entry.getValue().guard())
+               && !promotesRetired(m, entry)
+               && rowsCommitted(m, entry);
+    }
+
+    /// #3389: a goal that loads waits until every declared route row of its artifact is committed, so a slice never loads before its routes
+    /// are `Declared`; the transaction then witnesses what the gate reads ([#gateGuards]). The commit of a row requests the reconcile that derives the
+    /// held goal again (`Judgments`).
+    private static boolean rowsCommitted(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
+        return ! gated(entry) || Routes.rowsCommitted(m,
+                                                      entry.getKey().artifact());
     }
 
     private static boolean promotesRetired(ClusterModel m, Map.Entry<SlicePair, GoalIntent> entry) {
@@ -762,6 +792,7 @@ public sealed interface Outbox {
             case AetherKey.ActivationDirectiveKey k -> m.directives.get(k.nodeId()).map(v -> (AetherValue) v);
             case AetherKey.CommunityKey k -> m.communities.get(k.communityId()).map(v -> (AetherValue) v);
             case AetherKey.SchemaVersionKey k -> m.schemas.get(k.datasourceName()).map(v -> (AetherValue) v);
+            case AetherKey.DeclaredRouteKey k -> m.declaredRoutes.get(k).map(v -> (AetherValue) v);
             case AetherKey.TopicSubscriptionKey k -> m.topicRows.get(k);
             case AetherKey.TopicPublisherKey k -> m.topicRows.get(k);
             case AetherKey.FsmWarningKey k -> m.warningRows.get(k).map(v -> (AetherValue) v);
@@ -821,6 +852,9 @@ public sealed interface Outbox {
             case STALE_MARK -> m;
             // #1337 parity: a refused stale topic-row removal is derived again by the next pass's sweep (`DepartureFlow.sweepStaleTopicRows`).
             case STALE_TOPIC_ROW -> m;
+            // #3389: a refused routes batch is not resubmitted; the reconcile's `Routes.sweep` derives the difference between the blueprint and the
+            // mirror the refusal corrected, so a draft lost with a leader term or dropped by a suspension is covered by the same step.
+            case ROUTES -> m;
             // #2834: the next flush drafts the difference between the family sets and the mirror the refusal corrected.
             case WARNINGS -> Warnings.unlanded(m, draft);
             case DIRECTIVE -> rederiveAssignment(m, ctx, draft);
@@ -955,9 +989,8 @@ public sealed interface Outbox {
             }
 
             var pair = pairs.getFirst();
-            var guard = Option.from(draft.guards().stream().filter(g -> g.key()
-                                                                         .equals(pair.observedKey())).findFirst());
-            var pairMoved = pairMoved(m, mutation, guard);
+            var guards = pairGuards(draft, pair);
+            var pairMoved = pairMoved(m, mutation, guards);
             // FER: a pair past the resubmission bound is released and re-derived by the next reconcile (6.2); one that moved is re-derived by it.
             if (pairMoved || draft.attempt() >= limit) {
                 releaseUnwritten(m, pair);
@@ -967,21 +1000,50 @@ public sealed interface Outbox {
 
             stay.add(mutation);
             stayPairs.add(pair);
-            guard.onPresent(stayGuards::add);
+            stayGuards.addAll(guards);
         }
 
-        return new PairSplit(stay, stayGuards, stayPairs, shared, movedAny);
+        return new PairSplit(stay,
+                             stayGuards.stream().distinct().toList(),
+                             stayPairs,
+                             shared,
+                             movedAny);
+    }
+
+    /// The witnesses of `draft` that concern `pair`: its observed guard and, for a goal that loads, every witness its gate derived (#3389, #3836:
+    /// the target row, the owner's blueprint, the declared rows). The list is derived by [Routes#goalWitnesses] over what the draft recorded, the
+    /// function that derived it, so a pair resubmitted after a refusal keeps every kind and a goal never commits without the witnesses it was
+    /// derived under. An UNLOADED pair recorded none of them, so it keeps none.
+    private static List<KVCommand.ReadWitness<AetherKey>> pairGuards(TxDraft draft, SlicePair pair) {
+        var gate = Routes.goalWitnesses(recorded(draft),
+                                        pair.artifact())
+                         .stream()
+                         .map(KVCommand.ReadWitness::key)
+                         .collect(Collectors.toSet());
+
+        return draft.guards()
+                    .stream()
+                    .filter(guard -> guard.key()
+                                          .equals(pair.observedKey()) || gate.contains(guard.key()))
+                    .toList();
+    }
+
+    /// What `draft` witnessed, as a reading of the mirror: the value a witness expects, and nothing for a key it does not carry.
+    private static Function<AetherKey, Option<AetherValue>> recorded(TxDraft draft) {
+        return key -> Option.from(draft.guards().stream().filter(guard -> guard.key()
+                                                                               .equals(key)).findFirst()).flatMap(guard -> guard.expected()
+                                                                                                                                .map(AetherValue.class::cast));
     }
 
     private static boolean pairMoved(ClusterModel m,
                                      KVCommand.Mutation<AetherKey, AetherValue> mutation,
-                                     Option<KVCommand.ReadWitness<AetherKey>> guard) {
+                                     List<KVCommand.ReadWitness<AetherKey>> guards) {
         return ! mutation.expected()
                          .equals(mirrored(m,
-                                          mutation.key())) || guard.map(g -> !g.expected()
-                                                                               .equals(mirrored(m,
-                                                                                                g.key()).map(v -> (Object) v)))
-                                                                   .or(false);
+                                          mutation.key())) || guards.stream()
+                                                                    .anyMatch(g -> !g.expected()
+                                                                                     .equals(mirrored(m,
+                                                                                                      g.key()).map(v -> (Object) v)));
     }
 
     /// R-4.3.3 refused: derived again from the mirror at once, at most [#GOAL_RESUBMISSIONS] times, then parked for the next reconcile (6.2:

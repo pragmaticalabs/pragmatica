@@ -344,7 +344,7 @@ class BlueprintApplyRecordTest {
             if (index == 0) {
                 var mine = store.get(BLUEPRINT).map(v -> (AppBlueprintValue) v).unwrap();
 
-                store.process(store.createBatch(List.of(new KVCommand.Put<>(BLUEPRINT, new AppBlueprintValue(mine.blueprint(), mine.registerOnly(), "a-newer-attempt")))));
+                store.process(store.createBatch(List.of(new KVCommand.Put<>(BLUEPRINT, AppBlueprintValue.appBlueprintValue(mine.blueprint(), mine.registerOnly(), "a-newer-attempt")))));
             }
         };
 

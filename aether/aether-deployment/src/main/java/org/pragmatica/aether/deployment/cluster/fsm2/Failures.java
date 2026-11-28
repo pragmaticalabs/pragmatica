@@ -112,6 +112,7 @@ public sealed interface Failures {
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.Fatal(Outcomes.declaringAttempts(m, artifact))));
         routeFailed(m, ctx, pair, reason);
+        Routes.fail(m, artifact, reason);
 
         return ctx.settings()
                   .atomicity() == DeploymentAtomicity.ALL_OR_NOTHING
