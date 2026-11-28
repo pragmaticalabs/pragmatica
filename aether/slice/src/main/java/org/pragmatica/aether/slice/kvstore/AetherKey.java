@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -14,6 +15,7 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.state.kvstore.AssignmentGuarded;
 import org.pragmatica.cluster.state.kvstore.HolderGuarded;
 import org.pragmatica.cluster.state.kvstore.RestoreAuthorityKey;
+import org.pragmatica.cluster.state.kvstore.RetiredWithUnit;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1668,9 +1670,15 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
 
     /// The directive receipt of one node id (#3828): the committed fact that the cluster FSM issued an activation directive to that node id, kept
     /// after the directive itself is gone. A [RuntimeKey], read only by the cluster FSM and not replicated to workers. Inert at this lane: nothing
-    /// writes it.
-    record DirectiveReceiptKey(NodeId nodeId) implements RuntimeKey {
+    /// writes it, and the applier admits only its removal together with its unit mates, the departure record and the directive of the same node
+    /// ([RetiredWithUnit]; the one production owner is `RetirementUnit`).
+    record DirectiveReceiptKey(NodeId nodeId) implements RuntimeKey, RetiredWithUnit {
         private static final String PREFIX = "directive-receipt/";
+
+        @Override
+        public List<AetherKey> unitMates() {
+            return List.of(new NodeDepartureKey(nodeId), new ActivationDirectiveKey(nodeId));
+        }
 
         @Override
         public String asString() {

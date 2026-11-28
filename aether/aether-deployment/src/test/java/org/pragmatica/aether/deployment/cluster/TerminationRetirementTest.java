@@ -108,6 +108,12 @@ class TerminationRetirementTest {
     }
 
     private void seed(AetherKey key, AetherValue value) {
+        if (key instanceof DirectiveReceiptKey) {
+            ReceiptInertness.plant(store, key, value);
+            submitted.clear();
+            return;
+        }
+
         commit(new KVCommand.LeaderTransaction<>(key,
                                                  "seed-" + key,
                                                  LEADER,

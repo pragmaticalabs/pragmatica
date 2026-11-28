@@ -609,12 +609,7 @@ class CommunityPlacementReconcilerTest {
     private static final AetherValue.DirectiveReceiptValue RECEIPT = AetherValue.DirectiveReceiptValue.directiveReceiptValue("worker");
 
     private void seedReceipt(NodeId node) {
-        var key = new AetherKey.DirectiveReceiptKey(node);
-        seed(new KVCommand.LeaderTransaction<>(key,
-                                               "receipt-" + node.id(),
-                                               new LeaderValue(CORE, 1),
-                                               List.of(),
-                                               List.of(new KVCommand.Mutation<>(key, store.get(key), Option.some(RECEIPT)))));
+        ReceiptInertness.plant(store, new AetherKey.DirectiveReceiptKey(node), RECEIPT);
     }
 
     /// Up to the step whose commit is COMPLETE, the drained OLD holding its directive, its placement and a departure record.
