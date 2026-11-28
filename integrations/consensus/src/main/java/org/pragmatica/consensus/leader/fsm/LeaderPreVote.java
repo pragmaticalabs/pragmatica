@@ -287,8 +287,7 @@ public final class LeaderPreVote {
     /// `suspect(leader)` opens a new episode) and the throw propagates unchanged, as it does today.
     private Unit verdict(Episode current, NodeId leader) {
         try {
-            ctx.suspicionEpisode(new Suspicion(current))
-               .dispatch(new LeaderDoubtConfirmed(leader));
+            ctx.suspicionEpisode(new Suspicion(current)).dispatch(new LeaderDoubtConfirmed(leader));
         } finally {
             endEpisode(current);
         }
