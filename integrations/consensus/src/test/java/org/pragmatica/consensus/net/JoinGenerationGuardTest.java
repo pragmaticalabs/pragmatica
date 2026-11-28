@@ -173,7 +173,9 @@ class JoinGenerationGuardTest {
                .onFailure(cause -> assertThat(cause).isEqualTo(new ConsensusError.WireGenerationRefused(B, 1, 2)));
     }
 
-    /// Pin: the generation is bumped to 16 by #3389 (`AppBlueprintValue` gained `declaredRoutes`, so an older node decodes the new value
+    /// Pin: the generation is bumped to 17 by #3828 (a semantic break: `TerminationRetirement` judges the departure record and the directive it
+    /// first read by one comparison of epochs, so a gen-16 and a gen-17 leader end or remove differently over the same stored values; no TAG,
+    /// SHAPE or ENUM line moved). 16 was #3389 (`AppBlueprintValue` gained `declaredRoutes`, so an older node decodes the new value
     /// with a missing field as a malformed blueprint). 15 was #3041 (`ConsumerGroupValue` and `ConsumerGroupTombstone` gained `streamIncarnation`, so an older
     /// node decodes the new records' extra field as a malformed value). 14 was #3359 (`IncarnationTag` gained `lineageId`, so an older node decodes the new tag with a missing
     /// field as a malformed replica-feed message). 13 was #3458 M-1 (`StreamDeclaration` gained `storage` and `StreamConfigValue` moved from
@@ -182,10 +184,10 @@ class JoinGenerationGuardTest {
     /// 11 was #3458 W-4 (`ReadRefusal.Kind` gained
     /// `BELOW_COPY_TAIL`, so `UNKNOWN`'s ordinal moved from 16 to 17 and an older node misreads the new kind). 10 was #3458 M-1c (ReadRefusal gained its `causes` slot, so
     /// an older node decodes the new shape's extra field as a malformed refusal). 9 was #3458 M-1b (the `cause` slot); 8 was #3530 (four dead key types
-    /// left the wire baseline); 7 was #3334 S1a-1a (assignment flag day). A literal, so a revert to 15 goes red.
+    /// left the wire baseline); 7 was #3334 S1a-1a (assignment flag day). A literal, so a revert to 16 goes red.
     @Test
-    void thisBinarysGeneration_isSixteenAfterTheDeclaredRoutesField() {
-        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(16);
+    void thisBinarysGeneration_isSeventeenAfterTheTerminationRetirementJudgement() {
+        assertThat(JoinGenerationGuard.WIRE_GENERATION).isEqualTo(17);
     }
 
     @Test

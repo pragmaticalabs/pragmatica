@@ -21,7 +21,11 @@
 # no skip metadata, so an old reader desynchronises rather than ignoring the change).
 # Rename only, same type and position = byte-neutral, pinned so a same-typed name swap is
 # visible in this diff. See WireAssignmentTripwireTest for the derivation from the generator.
-GENERATION 16
+GENERATION 17
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.process TerminationRetirement compares epoch and process of the record -> compares the epoch only (same epoch, other process: ends -> removes)
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.state TerminationRetirement removes an ADMITTED or UNKNOWN record at the epoch first read (retry: ends) -> waits on ADMITTED, ends on UNKNOWN
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.NodeDepartureValue.epoch TerminationRetirement goes on when the record is gone and the directive is unchanged -> ends, an absent record counting as epoch 0
+SEMANTIC org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue TerminationRetirement removes a directive moved beside a DEPARTED record at the epoch first read -> ends and removes nothing
 ENUM org.pragmatica.aether.api.ClusterEvent$Severity INFO=0,WARNING=1,CRITICAL=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$NotAppliedReason ROUTE_NOT_FOUND=0,BUDGET_EXHAUSTED=1,UNDECODABLE_REQUEST=2,UNKNOWN=3
 ENUM org.pragmatica.aether.http.forward.HttpForwardMessage$Pipeline APP=0,MANAGEMENT=1,UNKNOWN=2
@@ -225,6 +229,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey (bluepr
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey (partitionId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DirectiveReceiptKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey (target:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey (artifact:org.pragmatica.aether.artifact.Artifact,methodName:org.pragmatica.aether.slice.MethodName,instanceNumber:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey (keyspace:java.lang.String,child:int)
@@ -310,6 +315,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentValue (deploymen
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DhtPartitionOwnershipValue (ownerNodeId:org.pragmatica.consensus.NodeId,ownerCommunityId:java.lang.String,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,ownershipTerm:long,transferredAt:org.pragmatica.hlc.HlcTimestamp)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationChangeValue (version:long,replicationFactor:int,confirmationFactor:int,floorWriteQuorum:int,floorReadQuorum:int,sourceReplicationFactor:int,stage:org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage,since:long,overdue:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationReportValue (appliedVersion:long,caughtUpVersion:long,replica:boolean)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$DirectiveReceiptValue (role:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue (childLife:long,waiverCase:org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase,discarded:java.util.List<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$EntityFoldCheckpointValue (throughOffset:long,blockIdHex:java.lang.String,timestamp:long)
@@ -694,6 +700,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DeploymentOutcomeKey 1671
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtPartitionOwnershipKey 1103
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationChangeKey 2120
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DhtReplicationReportKey 2122
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DirectiveReceiptKey 3120
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$DrainCommandKey 2962
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EndpointKey 1105
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$EntityArcWaiverKey 3019
@@ -788,6 +795,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtPartitionOwnershipValue 
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationChangeValue 2121
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationReportValue 2123
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage 2126
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$DirectiveReceiptValue 3121
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EndpointValue 1619
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue 3022
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$EntityArcWaiverValue$WaiverCase 3023

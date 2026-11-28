@@ -120,9 +120,11 @@ public sealed interface Lifecycle {
                     .map(removal);
     }
 
-    /// C17r residue (draft 8.1a): a committed `NodeDepartureKey(n)` record, a directive, or desired or observed rows.
+    /// C17r residue (draft 8.1a): a committed `NodeDepartureKey(n)` record, a directive, a directive receipt (#3828, G3: a worker whose
+    /// directive was removed and whose rows are gone is still owed a DEPARTED record, which C17b retires with the receipt), or desired or
+    /// observed rows.
     private static boolean hasResidue(ClusterModel m, NodeId node) {
-        return m.records.containsKey(node) || m.directives.containsKey(node) || m.desiredByNode.containsKey(node) || m.observedByNode.containsKey(node);
+        return m.records.containsKey(node) || m.directives.containsKey(node) || m.desiredByNode.containsKey(node) || m.observedByNode.containsKey(node) || m.receipts.containsKey(node);
     }
 
     /// H-1: C11f's non-STALE extension applies to the DEPARTED records that were already committed when this leader rebuilt.

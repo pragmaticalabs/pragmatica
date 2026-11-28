@@ -25,6 +25,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperati
 import org.pragmatica.aether.slice.kvstore.AetherValue.CommunityValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentApplyValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureCause;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DeploymentOutcomeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
@@ -158,6 +159,9 @@ public final class ClusterModel {
     PMap<String, Long> announcementSeenAt = PMap.empty(scans);
     PMap<NodeId, Admission> admissions = PMap.empty(scans);
     PMap<NodeId, NodeDepartureValue> records = PMap.empty(scans);
+    /// #3828 (design 3.3): the committed directive receipts by node id, a cache of the KV that `Rebuild`, the notifications and a refusal fill. Nothing in
+    /// the model decides from it yet.
+    PMap<NodeId, DirectiveReceiptValue> receipts = PMap.empty(scans);
     /// R-2.11: ids this leader observed joining **after** its `Rebuild` (a join input, C11f, or core liveness). Empty at `Rebuild`: the
     /// seed never supersedes a committed DEPARTED (D-4 (ii)).
     PSet<NodeId> joined = PSet.empty(scans);
@@ -328,6 +332,7 @@ public final class ClusterModel {
         c.announcementSeenAt = announcementSeenAt.rebound(meter);
         c.admissions = admissions.rebound(meter);
         c.records = records.rebound(meter);
+        c.receipts = receipts.rebound(meter);
         c.joined = joined.rebound(meter);
         c.inherited = inherited.rebound(meter);
         c.livenessSince = livenessSince.rebound(meter);
@@ -608,7 +613,8 @@ public final class ClusterModel {
 
     /// One transaction the handlers intend to submit at the end of the drain (R-5.7.4): its kind, its primary key,
     /// its mutations, its read guards, the pairs and node it concerns (for the per-pair re-derivation of R-5.7.2), the
-    /// number of times it has been submitted, and the events to route when it is accepted.
+    /// number of times it has been submitted, and the events to route when it is accepted. A CLEANUP draft also keeps the
+    /// [RetirementUnit] it was built with (#3828), beside its rows.
     public record TxDraft(SubmitKind kind,
                           AetherKey key,
                           List<KVCommand.Mutation<AetherKey, AetherValue>> mutations,
@@ -618,7 +624,8 @@ public final class ClusterModel {
                           int attempt,
                           List<RoutedEvent> onAccepted,
                           List<JudgmentOp> eventOps,
-                          long window) {
+                          long window,
+                          Option<RetirementUnit> unit) {
         public TxDraft {
             mutations = List.copyOf(mutations);
             guards = List.copyOf(guards);
@@ -635,7 +642,7 @@ public final class ClusterModel {
                        Option<NodeId> node,
                        int attempt,
                        List<RoutedEvent> onAccepted) {
-            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of());
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, List.of(), 0L, Option.none());
         }
 
         public TxDraft(SubmitKind kind,
@@ -647,7 +654,7 @@ public final class ClusterModel {
                        int attempt,
                        List<RoutedEvent> onAccepted,
                        List<JudgmentOp> eventOps) {
-            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, 0L);
+            this(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, 0L, Option.none());
         }
 
         public static TxDraft draft(SubmitKind kind,
@@ -657,11 +664,11 @@ public final class ClusterModel {
         }
 
         public TxDraft withGuards(List<KVCommand.ReadWitness<AetherKey>> value) {
-            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps, window);
+            return new TxDraft(kind, key, mutations, value, pairs, node, attempt, onAccepted, eventOps, window, unit);
         }
 
         public TxDraft withPairs(Set<SlicePair> value) {
-            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps, window);
+            return new TxDraft(kind, key, mutations, guards, value, node, attempt, onAccepted, eventOps, window, unit);
         }
 
         public TxDraft withNode(NodeId value) {
@@ -674,27 +681,53 @@ public final class ClusterModel {
                                attempt,
                                onAccepted,
                                eventOps,
-                               window);
+                               window,
+                               unit);
         }
 
         public TxDraft withOnAccepted(List<RoutedEvent> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps, window);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, value, eventOps, window, unit);
         }
 
         /// The judgment operations this transaction carries that answer an event (see [JudgmentOp#eventOnly]): if the write is lost,
         /// failed or its judgment moved, they are decided again from here, since no sweep derives them.
         public TxDraft withEventOps(List<JudgmentOp> value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value, window);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, value, window, unit);
+        }
+
+        /// The retirement unit a CLEANUP draft was built with (#3828, design 3.4): resubmission asks the unit, never the flat lists.
+        public TxDraft withUnit(RetirementUnit value) {
+            return new TxDraft(kind,
+                               key,
+                               mutations,
+                               guards,
+                               pairs,
+                               node,
+                               attempt,
+                               onAccepted,
+                               eventOps,
+                               window,
+                               Option.some(value));
         }
 
         /// The community state-change write this draft belongs to (`ActivationWindow#write`), so that its refusal or failure can tell its
         /// own window from another write's. 0 for a draft that is not a community state change.
         public TxDraft withWindow(long value) {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, value);
+            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt, onAccepted, eventOps, value, unit);
         }
 
         public TxDraft nextAttempt() {
-            return new TxDraft(kind, key, mutations, guards, pairs, node, attempt + 1, onAccepted, eventOps, window);
+            return new TxDraft(kind,
+                               key,
+                               mutations,
+                               guards,
+                               pairs,
+                               node,
+                               attempt + 1,
+                               onAccepted,
+                               eventOps,
+                               window,
+                               unit);
         }
     }
 

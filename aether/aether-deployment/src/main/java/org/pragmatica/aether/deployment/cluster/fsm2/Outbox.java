@@ -784,6 +784,7 @@ public sealed interface Outbox {
             case AetherKey.SliceObservedKey k -> m.observed.get(SlicePair.slicePair(k.nodeId(), k.artifact())).map(v -> (AetherValue) v);
             case ArtifactJudgmentKey k -> m.judgments.get(k.artifact()).map(v -> (AetherValue) v);
             case AetherKey.NodeDepartureKey k -> m.records.get(k.nodeId()).map(v -> (AetherValue) v);
+            case AetherKey.DirectiveReceiptKey k -> m.receipts.get(k.nodeId()).map(v -> (AetherValue) v);
             case AetherKey.AppBlueprintKey k -> m.blueprints.get(k.blueprintId()).map(v -> (AetherValue) v);
             case AetherKey.NodeRoutesKey k -> m.routes.get(SlicePair.slicePair(k.nodeId(), k.artifact())).map(v -> (AetherValue) v);
             case AetherKey.SliceTargetKey k -> m.targets.get(k.artifactBase()).map(v -> (AetherValue) v);

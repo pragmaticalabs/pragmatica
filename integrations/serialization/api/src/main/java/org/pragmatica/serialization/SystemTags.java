@@ -892,6 +892,10 @@ public interface SystemTags {
         pin(table, 3113, "org.pragmatica.aether.slice.kvstore.RouteState.Published");
         pin(table, 3114, "org.pragmatica.aether.slice.kvstore.RouteState.Failed");
         pin(table, 3115, "org.pragmatica.aether.slice.kvstore.AetherValue.DeclaredRoute");
+        // #3828 receipt redesign, lane 1: the directive receipt's key. Inside the k3828 reservation 3120..3123 of wire-tag-ranges.txt;
+        // 3121 is DirectiveReceiptValue (lane 2).
+        pin(table, 3120, "org.pragmatica.aether.slice.kvstore.AetherKey.DirectiveReceiptKey");
+        pin(table, 3121, "org.pragmatica.aether.slice.kvstore.AetherValue.DirectiveReceiptValue");
         // ---- unpinned numbers up to 16383 RESERVED: reserve a range in wire-tag-ranges.txt first ----
         rejectDuplicateTags(table);
 

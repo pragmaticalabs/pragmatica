@@ -5059,6 +5059,15 @@ public sealed interface AetherValue {
                               Option<DepartureCause> cause,
                               long decidedAt) implements AetherValue, LeaderAuthorized {}
 
+    /// The directive receipt of one node id, under [AetherKey.DirectiveReceiptKey] (#3828): the committed fact that the cluster FSM issued an
+    /// activation directive to that node id. `role` is the role of the directive it was issued with. [LeaderAuthorized]: every write is a
+    /// `LeaderTransaction` mutation. Inert at this lane: nothing writes or reads it.
+    record DirectiveReceiptValue(String role) implements AetherValue, LeaderAuthorized {
+        public static DirectiveReceiptValue directiveReceiptValue(String role) {
+            return new DirectiveReceiptValue(role);
+        }
+    }
+
     /// Where an admitted process stands (O3-1, q4 7.1): the identity facet of [NodeLifecycleValue]. `TERMINATED` is final (I-J8).
     @Codec
     enum IdentityState {
