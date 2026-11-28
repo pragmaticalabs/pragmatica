@@ -1268,6 +1268,19 @@ public enum OperatorWarningCode {
     /// The recovery of [#APPLY_DEADLINE_EXCEEDED], same subject: the blueprint's outcome was replaced (a republish) or removed.
     /// Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
     APPLY_DEADLINE_CLEARED("apply-deadline-cleared", "deployment", WarningLevel.INFO, APPLY_DEADLINE_EXCEEDED, true),
+    /// A committed target whose placement audience is empty is not placed (#3815): under WORKERS_ONLY, no worker sits in an ACTIVE community,
+    /// which on a small cluster means the community has fewer live members than `[community_policy] viability_floor` (default 3, the DHT
+    /// replication factor); the other policies when no core is ready. Once per episode. Subject is the target (the artifact without its
+    /// version). The message names the policy, each community with its state and live members, and the floor. Closed by
+    /// [#PLACEMENT_AUDIENCE_AVAILABLE]. Operator action: add workers, or lower `viability_floor` with `allow_below_rf = true`.
+    PLACEMENT_AUDIENCE_EMPTY("placement-audience-empty", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#PLACEMENT_AUDIENCE_EMPTY], same subject: the audience is no longer empty, the placement no longer parses, or the
+    /// target was removed. Closes across nodes (#2834): the cluster FSM commits the open set of this family (`FsmWarningKey`).
+    PLACEMENT_AUDIENCE_AVAILABLE("placement-audience-available",
+                                 "deployment",
+                                 WarningLevel.INFO,
+                                 PLACEMENT_AUDIENCE_EMPTY,
+                                 true),
     /// A live worker saw its own activation directive removed with no replacement, and halts (#3193): the core retired it as
     /// departed while the process still runs. Subject: the worker's node id. There is no recovery code: the halt ends the
     /// process, and the node returns only through a fresh `WorkerJoin`.

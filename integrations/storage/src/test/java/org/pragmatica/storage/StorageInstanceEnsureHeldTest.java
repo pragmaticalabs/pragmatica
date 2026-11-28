@@ -2,8 +2,8 @@ package org.pragmatica.storage;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.List;
-import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -13,6 +13,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -148,7 +149,7 @@ class StorageInstanceEnsureHeldTest {
         var put = gatedNode.put(CONTENT);
         var held = gatedNode.ensureHeld(id, TierLevel.REMOTE);
 
-        LockSupport.parkNanos(200_000_000L);
+        Pause.pause(Duration.ofMillis(200));
 
         assertThat(held.isResolved()).as("ensureHeld waits while the put is in flight").isFalse();
 

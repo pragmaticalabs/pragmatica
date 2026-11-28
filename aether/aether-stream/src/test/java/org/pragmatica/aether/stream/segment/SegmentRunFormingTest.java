@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.segment;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,6 +35,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.StorageInstance;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -312,7 +314,7 @@ class SegmentRunFormingTest {
 
         evict(sealer, 0, 0);
         awaitCondition(() -> calls.get() == 1);
-        LockSupport.parkNanos(100_000_000L);
+        Pause.pause(Duration.ofMillis(100));
 
         var armedBeforeClose = sealer.armedTimers();
 
@@ -321,7 +323,7 @@ class SegmentRunFormingTest {
         var armedAfterClose = sealer.armedTimers();
         var callsAtClose = calls.get();
 
-        LockSupport.parkNanos(2_500_000_000L);
+        Pause.pause(Duration.ofMillis(2500));
         assertThat(calls.get() - callsAtClose).as("sink calls after close").isZero();
         assertThat(armedBeforeClose).as("control: the failed cycle scheduled its retry before close").isEqualTo(1);
         assertThat(armedAfterClose).as("close cancelled the retry pause, well before it was due").isZero();
@@ -434,7 +436,7 @@ class SegmentRunFormingTest {
             sealer.onEviction(STREAM, 1, events(0, 0));
             assertThat(sealer.armedTimers()).as("control: partition 1 waits on its age timer").isEqualTo(1);
             sink.fail(sink.callFor(0));
-            LockSupport.parkNanos(20_000_000L);
+            Pause.pause(Duration.ofMillis(20));
 
             try (var sealerLog = org.pragmatica.testlogging.LogCapture.capture(SegmentSealer.class, org.apache.logging.log4j.Level.WARN, true);
                  var retryLog = org.pragmatica.testlogging.LogCapture.capture(org.pragmatica.lang.utils.Retry.class.getName(),
@@ -442,7 +444,7 @@ class SegmentRunFormingTest {
                                                                              true)) {
                 sealer.close();
                 sink.fail(sink.callFor(2));
-                LockSupport.parkNanos(1_200_000_000L);
+                Pause.pause(Duration.ofMillis(1200));
 
                 assertThat(sink.calls()).as("no seal after close: no retry of partition 0 or 2, no age seal of partition 1").isEqualTo(2);
                 assertThat(sealerLog.messages()).as("sealer WARN/ERROR after close").isEmpty();
@@ -501,7 +503,7 @@ class SegmentRunFormingTest {
 
             evict(sealer, 0, 0);
             awaitCondition(() -> sink.calls() == 1);
-            LockSupport.parkNanos(100_000_000L);
+            Pause.pause(Duration.ofMillis(100));
             evict(sealer, 1, 1);
             awaitCondition(() -> sink.calls() == 2, 2_000);
             assertThat(range(sink.segment(1))).isEqualTo(List.of(1L, 1L));
@@ -536,7 +538,7 @@ class SegmentRunFormingTest {
             assertThat(sealer.armedTimers()).as("control").isEqualTo(1);
             sealer.onStreamDeleted(STREAM);
 
-            LockSupport.parkNanos(600_000_000L);
+            Pause.pause(Duration.ofMillis(600));
             assertThat(sink.calls()).isZero();
             assertThat(sealer.pendingBytes()).isZero();
         }
@@ -738,7 +740,7 @@ class SegmentRunFormingTest {
             assertThat(List.of(0, 1)).as("nothing left unsealed when the stop resolved")
                                      .allMatch(partition -> sealer.lowestUnsealed(STREAM, partition).isEmpty());
             assertThat(sealer.armedTimers()).as("closed after the seals").isZero();
-            LockSupport.parkNanos(QUIET_MS * 1_000_000L);
+            Pause.pause(Duration.ofMillis(QUIET_MS));
             assertThat(raised).as("nothing to report").isEmpty();
         }
 
@@ -757,7 +759,7 @@ class SegmentRunFormingTest {
             sealer.stopSealed(timeSpan(10).seconds())
                   .await(timeSpan(1).seconds())
                   .onFailure(cause -> fail(cause.message()));
-            LockSupport.parkNanos(QUIET_MS * 1_000_000L);
+            Pause.pause(Duration.ofMillis(QUIET_MS));
             assertThat(raised).as("nothing to report").isEmpty();
         }
 
@@ -978,7 +980,7 @@ class SegmentRunFormingTest {
     }
 
     private static void assertNoSealFor(RecordingSink sink, int calls, String reason) {
-        LockSupport.parkNanos(QUIET_MS * 1_000_000L);
+        Pause.pause(Duration.ofMillis(QUIET_MS));
         assertThat(sink.calls()).as("no further seal (%s)", reason).isEqualTo(calls);
     }
 

@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api.routes;
 
+import java.time.Duration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -61,6 +62,7 @@ import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.testing.Pause;
 import org.pragmatica.utility.warning.OperatorWarning;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -730,7 +732,7 @@ class NodeLifecycleRoutesSliceFloorTest {
     }
 
     private List<OperatorWarning> settledWarnings() {
-        java.util.concurrent.locks.LockSupport.parkNanos(300_000_000L);
+        Pause.pause(Duration.ofMillis(300));
 
         return List.copyOf(warnings);
     }
@@ -780,7 +782,7 @@ class NodeLifecycleRoutesSliceFloorTest {
         assertThat(entered.await(TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
         var second = CompletableFuture.supplyAsync(() -> routes.drainNodeForTest(node(2).id()).await());
 
-        java.util.concurrent.locks.LockSupport.parkNanos(TimeSpan.timeSpan(200).millis().nanos());
+        Pause.pause(Duration.ofMillis(200));
         assertThat(calls).as("the second admission waits for the first's reservation").hasValue(1);
         release.succeed(Unit.unit());
 

@@ -10,11 +10,11 @@ import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -49,6 +49,7 @@ import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.testing.Pause;
 
 import static org.pragmatica.aether.stream.segment.SealedSegment.sealedSegment;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -315,7 +316,7 @@ class SealedHistoryRecoveryTest {
         /// One short park per appended record: enough to keep the reader scheduled, still fast enough that
         /// the ring evicts many times over during the loop.
         private static void paceAppends(long offset) {
-            LockSupport.parkNanos(APPEND_PACE_NANOS);
+            Pause.pause(Duration.ofNanos(APPEND_PACE_NANOS));
         }
 
         private static long misalignedIn(List<byte[]> records, long from) {

@@ -4,10 +4,10 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.locks.LockSupport;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.generation.Epoch;
@@ -18,6 +18,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.testing.Pause;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,7 +57,7 @@ class OwnerActivationLeaseTest {
         var refused = activation.admit(DURABLE, PARTITION);
 
         assertThat(causeOf(refused)).isInstanceOf(StreamError.OwnerLeaseLapsed.class);
-        LockSupport.parkNanos(300_000_000L);
+        Pause.pause(Duration.ofMillis(300));
         assertThat(rounds).as("no gate started by a lapse").hasValue(0);
         assertThat(activation.isActivated(DURABLE, PARTITION)).isFalse();
     }
