@@ -35,7 +35,6 @@ import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 
 import org.awaitility.Awaitility;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -50,8 +49,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3846 lane A3a: the run-time rows of memo r3 section 4 that hold at the head, in production event order, through the
 /// harness helpers ([OnDrainer], [LeaderCommits], [FsmTestHarness]). Each row states what happens TODAY; a row that lane
-/// St, C or F changes is a pair of methods (the ENABLED tripwire asserts today's behaviour and names its lane in the
-/// failure message; the `@Disabled` twin asserts the rule). The row table, its mutants and its flipping lanes are in the
+/// St, C or F changes was a pair of methods (the ENABLED tripwire asserted the head's behaviour; the `@Disabled` twin
+/// asserted the rule). Lane St flipped R-4: it keeps the rule only. The row table, its mutants and its flipping lanes are in the
 /// memo; a pin (no lane flips it) is asserted so that a change is visible, never claimed.
 @Timeout(value = 120, unit = TimeUnit.SECONDS)
 class LeaderRunTimeRowsTest {
@@ -89,29 +88,9 @@ class LeaderRunTimeRowsTest {
         }
     }
 
-    /// ENABLED tripwire (flipped in lane St): the poll task adopts the KV leader (`Led`) and then dispatches
-    /// `ConsensusReady` into that `Led`, which ignores it at the `default` arm; the observer sees the ignored pair.
-    @Test
-    void r4_pollThatAdoptsAKvLeader_atHead_dispatchesConsensusReadyIntoLed() {
-        var h = quorumWaitingAwaitingPoll(true);
-
-        try {
-            awaitState(h, LeaderElectionState.Led.class);
-            OnDrainer.drained(h.state().ctx());
-            assertThat(ignoredConsensusReadyInLed(h)).as("R-4 no longer acts: lane St landed the dispatchIfLive refusal of "
-                                                        + "the poll's second dispatch. Enable "
-                                                        + "r4_pollThatAdoptsAKvLeader_underInvE_isRefusedAndLedSeesNoConsensusReady "
-                                                        + "and delete this method")
-                      .isEqualTo(1L);
-        } finally {
-            shutdown(h);
-        }
-    }
-
-    /// The rule, `@Disabled` until lane St: the second dispatch of the poll is refused (the `refusedDispatches` count is a
-    /// lane C counter that does not exist at this head, so lane St adds it to this assertion), and `Led` sees no
-    /// `ConsensusReady`.
-    @Disabled("lane St: enable when the poll's second dispatch is refused through dispatchIfLive (R-4)")
+    /// The rule (#3846 INV-E, lane St): the poll task adopts the KV leader (`Led`), which ends the QuorumWaiting entry; the
+    /// poll's second dispatch (`ConsensusReady`) belongs to that ended entry, so the handle REFUSES it and counts it
+    /// (`refusedDispatchesForTest`), and `Led` sees no `ConsensusReady`.
     @Test
     void r4_pollThatAdoptsAKvLeader_underInvE_isRefusedAndLedSeesNoConsensusReady() {
         var h = quorumWaitingAwaitingPoll(true);
@@ -121,6 +100,8 @@ class LeaderRunTimeRowsTest {
             OnDrainer.drained(h.state().ctx());
             assertThat(ignoredConsensusReadyInLed(h)).as("the second dispatch was refused: Led saw no ConsensusReady")
                       .isZero();
+            assertThat(h.state().ctx().refusedDispatchesForTest()).as("the refusal is counted: the poll's second dispatch")
+                      .isEqualTo(1L);
         } finally {
             shutdown(h);
         }

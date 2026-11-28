@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 ///
 /// CEN-3 keys carry the member's modifiers, so a clause whose member changes shape without leaving the set (a `final`
 /// added to `claimInbound`) is a changed key: red, with a mutant per clause (E07 `claimInbound`, E08 `dispatchConfined`,
-/// E09 `dispatchSelf`, E10 `leaderPreVote`).
+/// E09 `dispatchSelf` (deleted by lane St; the clause keeps the name from returning), E10 `leaderPreVote`).
 ///
 /// `FsmBackedLeaderManager.fsmBackedLeaderManager(context, inbound, localMode)` is not an allow-list row at this head: lane M
 /// adds the factory and its row together (it takes an Inbound, so CEN-2 passes it without the row; the row names the one
@@ -93,16 +93,13 @@ class LeaderAuthorityCensusTest {
         "CEN-1 LeaderElectionContext.stopped",
         "CEN-1 LeaderElectionFsm.FsmWithContext.context",
         "CEN-1 LeaderElectionState.AwaitingKvSync.ctx",
-        "CEN-1 LeaderElectionState.AwaitingKvSync.episodeHandle",
         "CEN-1 LeaderElectionState.Dormant.ctx",
         "CEN-1 LeaderElectionState.Electing.ctx",
-        "CEN-1 LeaderElectionState.Electing.episodeHandle",
         "CEN-1 LeaderElectionState.Led.ctx",
         "CEN-1 LeaderElectionState.Passive.ctx",
         "CEN-1 LeaderElectionState.QuorumLost.ctx",
         "CEN-1 LeaderElectionState.QuorumWaiting.ctx",
         "CEN-1 LeaderElectionState.ReElecting.ctx",
-        "CEN-1 LeaderElectionState.ReElecting.episodeHandle",
         "CEN-1 LeaderElectionState.Stopped.ctx",
         "CEN-1 LeaderManager.FsmBackedLeaderManager.context",
         "CEN-1 LeaderPreVote.ctx",
@@ -117,21 +114,17 @@ class LeaderAuthorityCensusTest {
         "CEN-2 LeaderElectionContext.unentered()",
         "CEN-2 LeaderElectionFsm.FsmWithContext.context()",
         "CEN-2 LeaderElectionState.AwaitingKvSync.ctx()",
-        "CEN-2 LeaderElectionState.AwaitingKvSync.episodeHandle()",
         "CEN-2 LeaderElectionState.Dormant.ctx()",
         "CEN-2 LeaderElectionState.Electing.ctx()",
-        "CEN-2 LeaderElectionState.Electing.episodeHandle()",
         "CEN-2 LeaderElectionState.Led.ctx()",
         "CEN-2 LeaderElectionState.Passive.ctx()",
         "CEN-2 LeaderElectionState.QuorumLost.ctx()",
         "CEN-2 LeaderElectionState.QuorumWaiting.ctx()",
         "CEN-2 LeaderElectionState.ReElecting.ctx()",
-        "CEN-2 LeaderElectionState.ReElecting.episodeHandle()",
         "CEN-2 LeaderElectionState.Stopped.ctx()",
         "CEN-2 LeaderElectionState.ctx()",
         "CEN-2 LeaderManager.FsmBackedLeaderManager.context()",
-        "CEN-3 LeaderElectionContext.dispatchConfined: package-private",
-        "CEN-3 LeaderElectionState.dispatchSelf: private static");
+        "CEN-3 LeaderElectionContext.dispatchConfined: package-private");
 
     @Test
     void census_atHead_matchesTheCommittedRatchet() throws Exception {

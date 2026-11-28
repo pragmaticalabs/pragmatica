@@ -22,7 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// only after that task ran: when the drainer is idle it runs inline; when a timer task holds the drainer the task is
 /// queued behind it, and the call waits (bounded, never a sleep) for the completion the task sets, so the next
 /// assertion of the test never runs ahead of the event (#3605 v3605j row 50). `harness.dispatch(...)` from a test
-/// thread is off the drainer: a handler that reaches `dispatchSelf` would be refused.
+/// thread is off the drainer: a handler that reaches `EpisodeHandle#dispatch` would be refused.
 final class OnDrainer {
     private static final long HANDLED_WITHIN_SECONDS = 10;
 

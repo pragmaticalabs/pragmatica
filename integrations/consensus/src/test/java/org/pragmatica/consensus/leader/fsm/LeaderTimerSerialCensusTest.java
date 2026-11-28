@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// proposal's success and failure callbacks) runs its WHOLE body as one task of the node's serial executor.
 ///
 /// Round-3 ruling (know 6c68615e20, item 1): such a callback enters the node order through ONE path,
-/// a method on the state's `EpisodeHandle` (`serialized(...)`, #3846 round 2: the context offers no executor path); `dispatchSelf` is for already-confined code and has no queueing path of its own. This census
+/// a method on the state's `EpisodeHandle` (`serialized(...)`, #3846 round 2: the context offers no executor path); `EpisodeHandle#dispatch` is for already-confined code and has no queueing path of its own. This census
 /// has one behaviour row per handle `serialized(` site of leader main. Round-4 ruling (know 4c954b1c5d): a NEW unwrapped site
 /// is caught by enforcement, not by a count of the source: every leader dispatch goes through
 /// [LeaderElectionContext#dispatchConfined], which refuses a caller off the drainer ([LeaderDispatchConfinementTest]).

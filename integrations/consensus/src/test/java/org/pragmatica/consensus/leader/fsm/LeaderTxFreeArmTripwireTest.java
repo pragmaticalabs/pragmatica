@@ -22,7 +22,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.statemachine.Fsm;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,11 +32,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// minted from the null request: the mint answers NEVER (`refusedNullIdentities` + 1), the dispatch is refused and `Led`
 /// stays. The other tx-free arms that reach :712 are State:224-226, :319-321, :508-510, :998-1000 and :1033-1035.
 ///
-/// Two methods, as the tripwires of [LeaderEpisodeEntryPathTest]: the ENABLED tripwire asserts today's behaviour (the
-/// dispatch ACTS, the tenure ends), and its `@Disabled` twin asserts the rule. Lane St enables the twin and deletes the
-/// tripwire. The control, in the same test class, is the same removal of a node that is NOT the held leader: it must leave
-/// `Led` standing at every head, so a tenure that ends in the tripwire ended because of the dispatch and not because of
-/// the harness.
+/// Lane St flipped the row: the tripwire that asserted the dispatch ACTS is deleted and the rule is enabled. The control,
+/// in the same test class, is the same removal of a node that is NOT the held leader: it must leave `Led` standing at
+/// every head, so a tenure that ends in the rule's absence ended because of the dispatch and not because of the harness.
 class LeaderTxFreeArmTripwireTest {
     private static final NodeId SELF = new NodeId("core-0");
     private static final NodeId PEER = new NodeId("core-1");
@@ -64,27 +61,7 @@ class LeaderTxFreeArmTripwireTest {
         }
     }
 
-    /// ENABLED tripwire (flipped in lane St): at the head the dispatch of `LeaderOutOfView` ACTS and `Led` leaves.
-    @Test
-    void k22b_txFreeRemovalOfTheLeader_atHead_actsAndLedLeaves() {
-        var ctx = ledContext();
-
-        try {
-            var led = seededLed(ctx);
-
-            inbound(ctx).serially(() -> led.handle(new PeerRemovedFromView(PEER), null));
-
-            assertThat(ctx.current()).as("K22b no longer acts: lane St landed the identity mint for tx-free arms. Enable "
-                                         + "k22b_txFreeRemovalOfTheLeader_underInvE_isRefusedAndLedStays and delete this method")
-                                     .isNotInstanceOf(LeaderElectionState.Led.class);
-        } finally {
-            inbound(ctx).stop();
-        }
-    }
-
-    /// The rule, `@Disabled` until lane St: the null request mints NEVER, the dispatch is refused and `Led` stays.
-    /// Lane St adds the `refusedDispatches` count (a lane C counter that does not exist at this head).
-    @Disabled("lane St: enable when handlerEpisode(null) gives NEVER for a tx-free arm (K22b)")
+    /// The rule (#3846 INV-E, lane St): the null request mints NEVER, the dispatch is refused and counted, and `Led` stays.
     @Test
     void k22b_txFreeRemovalOfTheLeader_underInvE_isRefusedAndLedStays() {
         var ctx = ledContext();
@@ -98,6 +75,8 @@ class LeaderTxFreeArmTripwireTest {
                                      .isInstanceOf(LeaderElectionState.Led.class);
             assertThat(ctx.refusedNullIdentitiesForTest()).as("the null transition request mints NEVER and counts")
                                                           .isEqualTo(1);
+            assertThat(ctx.refusedDispatchesForTest()).as("the dispatch of the NEVER handle is refused and counted")
+                                                      .isEqualTo(1);
         } finally {
             inbound(ctx).stop();
         }

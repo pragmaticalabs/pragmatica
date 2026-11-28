@@ -35,9 +35,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #3605 round-4 ruling (know 4c954b1c5d): confinement is ENFORCED at the dispatch boundary. Every FSM dispatch of
 /// leader code goes through [LeaderElectionContext#dispatchConfined], which throws [IllegalStateException] naming the
-/// rule and the calling thread when the caller is not the node's serial drainer; `dispatchSelf` uses it.
+/// rule and the calling thread when the caller is not the node's serial drainer; `EpisodeHandle#dispatch` reaches it.
 ///
-/// Pinned here: the checked method refuses a foreign thread and the event never reaches the FSM; `dispatchSelf`,
+/// Pinned here: the checked method refuses a foreign thread and the event never reaches the FSM; `EpisodeHandle#dispatch`,
 /// reached from a handler that runs off the drainer, refuses the same way; and a Led tenure whose timers all fire
 /// refuses nothing. The last one is the detector for a NEW unwrapped site: an off-drainer callback added to the Led
 /// entry that dispatches without `ctx.serialized(...)` is refused on its scheduler thread, and the refusal count goes
@@ -166,18 +166,18 @@ class LeaderDispatchConfinementTest {
         stateAtReturn.set(ctx.current());
     }
 
-    /// `dispatchSelf` from a handler that runs off the drainer: a view-free removal of the Led leader holds the leader
-    /// to the view ([LeaderElectionState] `holdLeaderToView`), which dispatches `LeaderOutOfView` through `dispatchSelf`.
+    /// `EpisodeHandle#dispatch` from a handler that runs off the drainer: a view-free removal of the Led leader holds the
+    /// leader to the view ([LeaderElectionState] `holdLeaderToView`), which dispatches `LeaderOutOfView` through the handler's episode.
     /// Delivered straight to the FSM from a foreign thread, that dispatch is refused and the exception leaves the
     /// handler.
     @Test
-    void dispatchSelf_reachedOffTheDrainer_isRefusedNamingTheRuleAndTheCaller() throws InterruptedException {
+    void episodeDispatch_reachedOffTheDrainer_isRefusedNamingTheRuleAndTheCaller() throws InterruptedException {
         var ctx = context(ctx2 -> LeaderElectionState.Led.fresh(ctx2, PEER), LONG);
 
         try {
             var refused = onForeignThread(() -> fsm.dispatch(new PeerRemovedFromView(PEER)));
 
-            assertThat(refused).as("dispatchSelf off the serial drainer is refused")
+            assertThat(refused).as("the episode dispatch off the serial drainer is refused")
                                .isInstanceOf(IllegalStateException.class)
                                .hasMessageContaining(RULE)
                                .hasMessageContaining("LeaderOutOfView")

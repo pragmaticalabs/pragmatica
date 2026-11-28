@@ -103,18 +103,6 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         onEntry();
     }
 
-    /// Dispatches an event to this FSM instance from code that is ALREADY confined to the node's serial executor
-    /// (#3587): a handler, or a callback body wrapped in `EpisodeHandle#serialized`. It has no queueing path of
-    /// its own (#3605 round-3 ruling): every callback that runs off the drainer (a timer, a promise completion) enters
-    /// the node's order through ONE path, `EpisodeHandle#serialized(...)`, and calls this only inside it. Enforced, not assumed
-    /// (round-4 ruling): it goes through [LeaderElectionContext#dispatchConfined], which throws
-    /// [IllegalStateException] when the caller is not the drainer, so an unwrapped callback fails the first time it
-    /// fires instead of dispatching on its own thread. A hook never takes this path: it follows up
-    /// ([EpisodeHandle#followUp]).
-    private static void dispatchSelf(LeaderElectionContext ctx, ClusterFsmEvent event) {
-        ctx.dispatchConfined(event);
-    }
-
     // --- State records ---
     /// Dormant: no election, no observation; a view is still stored (#3092 I1).
     ///
@@ -266,18 +254,13 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     @Contract
     record AwaitingKvSync(LeaderElectionContext ctx,
                           AtomicReference<ScheduledFuture<?>> graceTimeoutFuture,
-                          long enteredAtNanos,
-                          AtomicReference<EpisodeHandle> episodeHandle) implements LeaderElectionState {
+                          long enteredAtNanos) implements LeaderElectionState {
         public static AwaitingKvSync fresh(LeaderElectionContext ctx) {
-            return new AwaitingKvSync(ctx,
-                                      new AtomicReference<>(),
-                                      System.nanoTime(),
-                                      new AtomicReference<>(ctx.unentered()));
+            return new AwaitingKvSync(ctx, new AtomicReference<>(), System.nanoTime());
         }
 
         @Override
         public void onEntered(EpisodeHandle episode) {
-            episodeHandle.set(episode);
             // Pull-side fast path — if KV already has a leader (auto-heal: replacement node
             // joined an existing cluster, KVSync already applied LeaderKey before we got here),
             // follow up with LeaderCommitted. #1803: a leader this node already observed (while
@@ -295,7 +278,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         private void armGraceTimer(EpisodeHandle episode) {
             log.info("Entering AwaitingKvSync: deferring leader-proposal for {}ms to absorb KV-sync from peers",
                      ctx.kvSyncGraceDelay().millis());
-            var future = SharedScheduler.schedule(episode.serialized(() -> dispatchSelf(ctx, new KvSyncGraceTimeout())),
+            var future = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new KvSyncGraceTimeout())),
                                                   ctx.kvSyncGraceDelay());
 
             graceTimeoutFuture.set(future);
@@ -411,10 +394,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         log.info("AwaitingKvSync: KV state still catching up and no committed leader visible yet — waiting another {}ms",
                  ctx.kvSyncGraceDelay().millis());
         waiting.graceTimeoutFuture()
-               .set(SharedScheduler.schedule(waiting.episodeHandle()
-                                                    .get()
-                                                    .serialized(() -> dispatchSelf(ctx,
-                                                                                   new KvSyncGraceTimeout())),
+               .set(SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new KvSyncGraceTimeout())),
                                              ctx.kvSyncGraceDelay()));
     }
 
@@ -422,18 +402,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// both signals on every tick so a peer-committed leader observed during the QuorumWaiting
     /// window short-circuits to `Led` without waiting for the consensus-readiness flip.
     /// On a true consensus-readiness flag this dispatches `ConsensusReady` into the FSM so the
-    /// handler can advance to `AwaitingKvSync`. The dispatch path is idempotent in non-
-    /// `QuorumWaiting` states (Dormant absorbs as `NO_ACTION_DORMANT`; QuorumLost absorbs the
-    /// same way; AwaitingKvSync/Electing/ReElecting/Led/Stopped fall through to `tx.ignore()`),
-    /// so a tick that races the FSM's own state transition is harmless. The KV pull goes
-    /// through `adoptLeaderFromKvIfPresent` which synthesizes a `LeaderCommitted`; if the FSM
-    /// is no longer in QuorumWaiting the synthetic event is consumed by whatever state owns
-    /// the FSM at dispatch time (or harmlessly ignored).
+    /// handler can advance to `AwaitingKvSync`. Both dispatches go through this tick's `episode`
+    /// (#3846 INV-E): the KV pull's `LeaderCommitted` is the first, and when it moves QuorumWaiting
+    /// to `Led` the entry has ended, so the second (`ConsensusReady`) is REFUSED by the handle, not
+    /// consumed by whatever state owns the FSM at dispatch time. A tick that races the FSM's own
+    /// transition therefore reaches no state of another entry.
     private static void pollConsensusAndKv(LeaderElectionContext ctx, EpisodeHandle episode) {
         adoptLeaderFromKvIfPresent(ctx, episode);
         if (ctx.consensusReadySupplier().get()) {
             log.info("Consensus engine became ready during QuorumWaiting poll — advancing");
-            dispatchSelf(ctx, new ConsensusReady());
+            episode.dispatch(new ConsensusReady());
         }
     }
 
@@ -452,8 +430,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                     long entryBaseline,
                     AtomicReference<ScheduledFuture<?>> tickFuture,
                     AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
-                    AtomicReference<ScheduledFuture<?>> observationFuture,
-                    AtomicReference<EpisodeHandle> episodeHandle) implements LeaderElectionState {
+                    AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
         public static Electing fresh(LeaderElectionContext ctx) {
             // FIX-1 refinement: snapshot the highest COMMITTED viewSequence at the instant this
             // node decides to elect. Adoption WITHIN this election requires a commit that POSTDATES
@@ -463,18 +440,16 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                 ctx.committedViewSequence(),
                                 new AtomicReference<>(),
                                 new AtomicReference<>(),
-                                new AtomicReference<>(),
-                                new AtomicReference<>(ctx.unentered()));
+                                new AtomicReference<>());
         }
 
         /// #3809, #3846 round 2: arms the first tick and the peer observation for THIS entry, through the entry's own
         /// handle, so each tick is fenced to this episode. They are armed here, by the entry hook, not in `fresh`: a record
         /// built for a transition that then loses its CAS arms nothing, and the only identity a tick can carry is the one
-        /// the Fsm handed this entry. The handle is also kept in [#episodeHandle] for the arm sites of this entry's
-        /// handlers (the retry tick, the proposal's timeout and completion).
+        /// the Fsm handed this entry. A handler of this entry mints its own handle from its transition request
+        /// ([LeaderElectionContext#handlerEpisode]) for the arm sites of the retry tick, the proposal's timeout and completion.
         @Override
         public void onEntered(EpisodeHandle episode) {
-            episodeHandle.set(episode);
             tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "Electing", Option.none()));
             observationFuture.set(SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> adoptLeaderFromKvIfPresent(ctx,
                                                                                                                           episode)),
@@ -678,7 +653,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  leader,
                  silent,
                  LeaderElectionContext.LEADER_SILENCE_THRESHOLD_INTERVALS);
-        dispatchSelf(ctx, new LeaderSilent(leader));
+        episode.dispatch(new LeaderSilent(leader));
     }
 
     /// Handles a `LeaderSilent` in [`Led`]. Fenced by `silentLeader`: a `LeaderSilent` naming a
@@ -722,8 +697,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void holdLeaderToView(LeaderElectionContext ctx, EpisodeHandle episode, Option<NodeId> namedFailed) {
         heldLeader(ctx.current()).filter(leader -> !isInStoredView(ctx, leader) || namedFailed.filter(leader::equals)
                                                                                               .isPresent())
-                  .onPresent(leader -> dispatchSelf(ctx,
-                                                    new LeaderOutOfView(leader)));
+                  .onPresent(leader -> episode.dispatch(new LeaderOutOfView(leader)));
     }
 
     /// The one #3092 I2 membership predicate: `node` is in the stored eligible view. Every in-view test in this file
@@ -941,8 +915,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                       Option<NodeId> suspect,
                       AtomicReference<ScheduledFuture<?>> tickFuture,
                       AtomicReference<ScheduledFuture<?>> proposalTimeoutFuture,
-                      AtomicReference<ScheduledFuture<?>> observationFuture,
-                      AtomicReference<EpisodeHandle> episodeHandle) implements LeaderElectionState {
+                      AtomicReference<ScheduledFuture<?>> observationFuture) implements LeaderElectionState {
         public static ReElecting fresh(LeaderElectionContext ctx) {
             return fresh(ctx, Option.none());
         }
@@ -965,14 +938,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                                   suspect,
                                   new AtomicReference<>(),
                                   new AtomicReference<>(),
-                                  new AtomicReference<>(),
-                                  new AtomicReference<>(ctx.unentered()));
+                                  new AtomicReference<>());
         }
 
         /// As [Electing#onEntered]: the timers are armed by the entry hook, through this entry's own handle.
         @Override
         public void onEntered(EpisodeHandle episode) {
-            episodeHandle.set(episode);
             tickFuture.set(scheduleStaircaseFirstTick(ctx, episode, "ReElecting", suspect));
             observationFuture.set(SharedScheduler.scheduleAtFixedRate(episode.serialized(() -> adoptLeaderFromKvIfPresent(ctx,
                                                                                                                           episode)),
@@ -1475,7 +1446,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// it once per state-entry and once per election tick guarantees the FSM cannot stay in
     /// `Electing` while consensus has already named a leader visible to this node's local KV.
     private static void adoptLeaderFromKvIfPresent(LeaderElectionContext ctx, EpisodeHandle episode) {
-        kvCommitToAdopt(ctx).onPresent(commit -> dispatchSelf(ctx, commit));
+        kvCommitToAdopt(ctx).onPresent(episode::dispatch);
     }
 
     /// The hook form of [#adoptLeaderFromKvIfPresent] (#3587, `FsmState`): the KV leader to adopt is this entry's
@@ -1639,7 +1610,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
                  ctx.perRankDelay().millis(),
                  ctx.peerObservationInterval().millis());
 
-        return SharedScheduler.schedule(episode.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
+        return SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ElectionTick())),
                                         TimeSpan.timeSpan(delayMs).millis());
     }
 
@@ -1655,7 +1626,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var jitterMs = (long)(ctx.proposalRetryDelay().millis() * (1.0 + ctx.jitterSource().getAsDouble()));
 
         log.debug("Scheduling election tick #{} in {}ms", retry, jitterMs);
-        var future = SharedScheduler.schedule(episode.serialized(() -> dispatchSelf(ctx, new ElectionTick())),
+        var future = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ElectionTick())),
                                               TimeSpan.timeSpan(jitterMs).millis());
 
         Option.option(holder.getAndSet(future)).onPresent(prior -> prior.cancel(false));
@@ -1677,7 +1648,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     /// \* passes); Led's local entry (leftTheViewOnLocalEntry) keeps it (the view is read in the same step); the
     /// \* sequence-less commit records its sequence through recordAdoptedSequence. The conjunct st = "electing" is enforced
     /// \* twice (#3846): the tick runs only through the entry's episode handle, which refuses it unless that entry's identity
-    /// \* is still the Fsm's current entry, and the guard `ctx.current() != owner` re-checks the state; a stale tick is a no-op.
+    /// \* is still the Fsm's current entry, and the guard `episode.isCurrent()` re-checks the entry; a stale tick is a no-op.
     /// L_Tick == /\ Local
     ///           /\ st = "electing"
     ///           /\ view # {}
@@ -1693,13 +1664,12 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
     private static void electLocallyOnTick(LeaderElectionContext ctx,
                                            EpisodeHandle episode,
                                            LeaderElectionState owner) {
-        if (ctx.current() != owner) {
+        if (!episode.isCurrent()) {
             return;
         }
 
         ctx.localLeaderCandidate()
-           .onPresent(leader -> dispatchSelf(ctx,
-                                             new LeaderCommitted(leader)))
+           .onPresent(leader -> episode.dispatch(new LeaderCommitted(leader)))
            .onEmpty(() -> rescheduleOnEmptyLocalView(ctx, episode, owner));
     }
 
@@ -1767,7 +1737,7 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
             return;
         }
 
-        if (ctx.current() != owner) {
+        if (!episode.isCurrent()) {
             // #1797 F1: a tick's own KV-pull adoption moved the FSM out of `owner` before this point;
             // `owner.onExit` already cleared the guard, `tryStartProposal` just re-set it, and a proposal
             // sent from the left state would store its timeout on a dead record (so nothing ever
@@ -1813,23 +1783,20 @@ public sealed interface LeaderElectionState extends FsmState<LeaderElectionState
         var viewSeq = ctx.nextViewSequence();
 
         log.info("Submitting leader proposal: candidate={}, viewSequence={}, epoch={}", candidate, viewSeq, epoch);
-        var timeoutFuture = SharedScheduler.schedule(episode.serialized(() -> dispatchSelf(ctx,
-                                                                                           new ProposalSettled(candidate,
-                                                                                                               false,
-                                                                                                               "timeout@epoch=" + epoch))),
+        var timeoutFuture = SharedScheduler.schedule(episode.serialized(() -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                                                   false,
+                                                                                                                   "timeout@epoch=" + epoch))),
                                                      ctx.proposalTimeout());
 
         storeProposalTimeoutFuture(owner, timeoutFuture);
         handler.propose(candidate, viewSeq)
-               .onSuccess(episode.serialized(_ -> dispatchSelf(ctx,
-                                                               new ProposalSettled(candidate,
-                                                                                   true,
-                                                                                   "submitted@epoch=" + epoch))))
-               .onFailure(episode.serialized(cause -> dispatchSelf(ctx,
-                                                                   new ProposalSettled(candidate,
-                                                                                       false,
-                                                                                       cause.message()
-                                                                                      + "@epoch=" + epoch))));
+               .onSuccess(episode.serialized(_ -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                       true,
+                                                                                       "submitted@epoch=" + epoch))))
+               .onFailure(episode.serialized(cause -> episode.dispatch(new ProposalSettled(candidate,
+                                                                                           false,
+                                                                                           cause.message()
+                                                                                          + "@epoch=" + epoch))));
     }
 
     /// Stores the proposal-timeout future onto the owning Electing/ReElecting record so that

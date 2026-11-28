@@ -141,12 +141,6 @@ class LeaderTripwireRowsTest {
     // ENABLED tripwires: the head's behaviour. A flipping lane deletes its method, enables its twin, drops nothing else.
 
     @ParameterizedTest
-    @MethodSource("laneStRows")
-    void tripwireLaneSt_atHead_compiles(TripwireRow row) throws Exception {
-        assertCompilesAtHead(row, "tripwireLaneSt_underInvE_doesNotCompile");
-    }
-
-    @ParameterizedTest
     @MethodSource("laneFRows")
     void tripwireLaneF_atHead_compiles(TripwireRow row) throws Exception {
         assertCompilesAtHead(row, "tripwireLaneF_underInvE_doesNotCompile");
@@ -154,7 +148,6 @@ class LeaderTripwireRowsTest {
 
     // The real assertions, @Disabled until the named lane lands the change.
 
-    @Disabled("lane St: enable when the three handle cells are deleted (K07, K08, K17, O01)")
     @ParameterizedTest
     @MethodSource("laneStRows")
     void tripwireLaneSt_underInvE_doesNotCompile(TripwireRow row) throws Exception {
