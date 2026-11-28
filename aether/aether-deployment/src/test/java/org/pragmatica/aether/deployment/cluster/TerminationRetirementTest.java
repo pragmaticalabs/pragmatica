@@ -85,6 +85,7 @@ class TerminationRetirementTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private List<Object> apply(List<KVCommand<AetherKey>> commands) {
+        ReceiptInertness.assertInert(commands);
         submitted.add(commands);
 
         return ((KVStore) store).process(((KVStore) store).createBatch((List) commands));

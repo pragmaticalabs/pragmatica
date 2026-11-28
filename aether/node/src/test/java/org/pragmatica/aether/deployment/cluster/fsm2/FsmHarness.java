@@ -39,6 +39,8 @@ import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 
 /// The interpreter of the cluster FSM for tests: an injected wall and monotonic clock, an injected scheduler (a due-time
 /// queue), a mailbox, and the **real `KVStore` applier** that receives every `Submit` and notifies the FSM back.
@@ -315,7 +317,24 @@ final class FsmHarness {
         }
     }
 
+    /// Receipt inertness (#3828, PR A: the receipt is a key type nothing writes yet): no transaction the FSM builds puts a `DirectiveReceiptKey`.
+    /// Every mutation on that key is a removal (an absent replacement). The ONE place every FSM test's transaction passes before it is applied
+    /// or lost, so a put beside a directive, in any transaction shape, fails here by name. The same rule guards the retirements and the
+    /// placement reconciler in aether-deployment's tests (`ReceiptInertness`: that module's test classes are not visible here). Fixture
+    /// receipts are written through `seed`, never through a `Submit`.
+    private static void assertReceiptInert(ClusterEffect.Submit submit) {
+        submit.transaction()
+              .mutations()
+              .stream()
+              .filter(mutation -> mutation.key() instanceof AetherKey.DirectiveReceiptKey)
+              .forEach(mutation -> assertThat(mutation.replacement().isEmpty())
+                                       .as("receipt inertness: a %s transaction puts the receipt key %s", submit.kind(), mutation.key())
+                                       .isTrue());
+    }
+
     private void submitted(ClusterEffect.Submit submit) {
+        assertReceiptInert(submit);
+
         var effective = loseKinds.contains(submit.kind())
                         ? SettlePolicy.LOSE
                         : holdKinds.contains(submit.kind())

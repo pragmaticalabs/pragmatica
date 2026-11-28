@@ -129,6 +129,7 @@ class CommunityPlacementReconcilerTest {
     private CommunityPlacementReconciler controller(NodeId self, int limit, long timeout, java.util.function.LongSupplier clock) {
         return CommunityPlacementReconciler.communityPlacementReconciler(self, store,
             commands -> {
+                ReceiptInertness.assertInert(commands);
                 committed.add(commands);
                 wallClockStamps.addAll(PlacementStampAudit.wallClockStamps(commands));
                 var hook = beforeCommit;

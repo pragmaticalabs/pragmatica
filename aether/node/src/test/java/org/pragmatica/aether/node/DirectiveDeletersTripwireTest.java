@@ -30,10 +30,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// set is frozen as of the binding, each file with the reason it is there. A NEW file is red: if it is #1842's writer, it must retire the
 /// directive and the record together (`TerminationRetirement.directiveAndRecord`) before it joins the list. **Limit:** a new deleting site
 /// inside a listed file is not seen; the per-writer W-tests cover the bound ones.
+///
+/// **The receipt scan** (#3828, F2-1): the same question for `DirectiveReceiptKey`, over EVERY main source under `aether/` (each module's
+/// `src/main/java`), not the two roots above and not only files that name `ActivationDirectiveKey`: a helper in any file, listed or not,
+/// that names the receipt key next to a removal construct is red unless the file is in [#RECEIPT_FROZEN] with its reason. Today the only
+/// deleter is `RetirementUnit#removals`, which removes it with the record and the directive at their exact values.
 class DirectiveDeletersTripwireTest {
     private static final List<Path> ROOTS = List.of(Path.of("src", "main", "java"),
                                                     Path.of("..", "aether-deployment", "src", "main", "java"));
     private static final Pattern REMOVAL = Pattern.compile("Remove<|addRemoval\\(|Option\\.none\\(\\)\\)|removal\\(");
+    private static final Path AETHER = Path.of("..");
+    private static final Map<String, String> RECEIPT_FROZEN = Map.ofEntries(Map.entry("RetirementUnit.java", "the one deleter: the receipt leaves with the record and the directive, each at its exact value (#3828)"),
+                                                                             Map.entry("Indexer.java", "fsm2: the mirror of committed removes of the receipt, a reader"),
+                                                                             Map.entry("Outbox.java", "fsm2: re-reads the expected value of a draft's receipt key, a reader"),
+                                                                             Map.entry("Fsm2Routes.java", "the FSM2 KV routes, a reader"),
+                                                                             Map.entry("AetherKey.java", "the key type's declaration, no removal of its own"),
+                                                                             Map.entry("AetherValue.java", "the value type's declaration, no removal of its own"));
     private static final Map<String, String> FROZEN = Map.ofEntries(Map.entry("ClusterDeploymentState.java", "LEGACY: deletes the directive at NodeRemoved (B9), unbound under FSM2"),
                                                                      Map.entry("ClusterDeploymentManager.java", "LEGACY: the onActivationDirectiveRemove route target (B1), a reader"),
                                                                      Map.entry("ClusterDeploymentEvents.java", "LEGACY: the remove event type, a reader"),
@@ -68,11 +80,31 @@ class DirectiveDeletersTripwireTest {
         return found;
     }
 
+    /// The files of every module's `src/main/java` under `root` that name the receipt key next to a removal construct.
+    private static TreeSet<String> receiptDeleters(Path root) {
+        var found = new TreeSet<String>();
+
+        try (Stream<Path> files = Files.walk(root)) {
+            files.filter(file -> file.toString().endsWith(".java"))
+                 .filter(file -> file.toString().replace('\\', '/').contains("/src/main/java/"))
+                 .filter(file -> namesAndRemoves(file, "DirectiveReceiptKey"))
+                 .forEach(file -> found.add(file.getFileName().toString()));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+
+        return found;
+    }
+
     private static boolean namesAndRemoves(Path file) {
+        return namesAndRemoves(file, "ActivationDirectiveKey");
+    }
+
+    private static boolean namesAndRemoves(Path file, String key) {
         try {
             var text = Files.readString(file, StandardCharsets.UTF_8);
 
-            return text.contains("ActivationDirectiveKey") && REMOVAL.matcher(text).find();
+            return text.contains(key) && REMOVAL.matcher(text).find();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -96,5 +128,27 @@ class DirectiveDeletersTripwireTest {
 
         assertThat(deleters(List.of(temp))).containsExactly("SourceTermination.java");
         assertThat(FROZEN).doesNotContainKey("SourceTermination.java");
+    }
+
+    @Test
+    void noReceiptDeletingWriter_appearsInAnyMainSource_outsideTheListedFiles() {
+        var found = receiptDeleters(AETHER);
+
+        assertThat(found).as("the scan reaches the deleter and a file of another module").contains("RetirementUnit.java", "AetherKey.java");
+        assertThat(found).as("#3828 F2-1: a main source under aether/ names DirectiveReceiptKey next to a removal. The receipt leaves only with its "
+                             + "record and directive, each at its exact value (RetirementUnit#removals); if this file is a new reader or a new "
+                             + "deleter, add it to RECEIPT_FROZEN with its reason")
+                         .isSubsetOf(RECEIPT_FROZEN.keySet());
+    }
+
+    @Test
+    void aPlantedReceiptDeleter_inAnUnlistedFileThatNamesNoDirective_isFlagged(@TempDir Path temp) throws IOException {
+        var main = Files.createDirectories(temp.resolve("src").resolve("main").resolve("java"));
+
+        Files.writeString(main.resolve("Lifecycle.java"),
+                          "class Lifecycle {\n    Object c = new KVCommand.Mutation<>(new DirectiveReceiptKey(node), Option.some(v), Option.none());\n}\n");
+
+        assertThat(receiptDeleters(temp)).containsExactly("Lifecycle.java");
+        assertThat(RECEIPT_FROZEN).doesNotContainKey("Lifecycle.java");
     }
 }
