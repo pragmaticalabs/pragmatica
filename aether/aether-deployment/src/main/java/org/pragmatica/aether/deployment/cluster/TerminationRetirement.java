@@ -258,18 +258,22 @@ public interface TerminationRetirement {
         return unit.isEmpty()
                ? Option.none()
                : store.getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                      .map(leader -> transaction(unit, leader));
+                      .flatMap(leader -> transaction(unit, leader));
     }
 
-    private static KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction(RetirementUnit unit,
-                                                                                   LeaderValue leader) {
+    /// None when the unit has no removal (the guarding form, which holds no removal; not reached by a correct unit): the retirement then fails
+    /// as a typed refusal, never as a `NoSuchElementException` out of the first-element read.
+    private static Option<KVCommand.LeaderTransaction<AetherKey, AetherValue>> transaction(RetirementUnit unit,
+                                                                                           LeaderValue leader) {
         var removals = unit.removals();
 
-        return new KVCommand.LeaderTransaction<>(removals.getFirst().key(),
-                                                 "retire:" + unit.node().id() + ":" + UUID.randomUUID(),
-                                                 leader,
-                                                 unit.witnesses(),
-                                                 removals);
+        return Option.from(removals.stream()
+                                   .findFirst())
+                     .map(first -> new KVCommand.LeaderTransaction<>(first.key(),
+                                                                     "retire:" + unit.node().id() + ":" + UUID.randomUUID(),
+                                                                     leader,
+                                                                     unit.witnesses(),
+                                                                     removals));
     }
 
     private static Promise<Unit> submit(Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
