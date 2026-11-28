@@ -39,6 +39,9 @@ class LeaderSinkScanTest {
     /// Head set. `serial.execute`: EpisodeHandle.serialized x2, Inbound.serially, Inbound.stop, submitInOrder (r3846p F3).
     /// `fsm.dispatch`: dispatchConfined only. `followUp`: the five hook sites of r3846p F1 plus `fsm.followUp` in
     /// followUpIfLive. Entries leave with lanes C, St and F.
+    /// Lane C2 adds `LeaderPreVote.verdict > dispatch`: the scan reads call names, and that call is `EpisodeHandle.dispatch` (the
+    /// suspicion handle's own route, which reaches the FSM only through `dispatchIfLive`, a WRAPPER_SET row), not `Fsm.dispatch`.
+    /// Lane St's handler calls through `handlerEpisode(tx)` are the same shape and join this set the same way.
     private static final Map<String, Integer> SINK_SET = Map.ofEntries(Map.entry(CTX_KEY + "EpisodeHandle.serialized > execute", 2),
                                                                        Map.entry(CTX_KEY + "Inbound.serially > execute", 1),
                                                                        Map.entry(CTX_KEY + "Inbound.stop > execute", 1),
@@ -49,14 +52,14 @@ class LeaderSinkScanTest {
                                                                        Map.entry(STATE_KEY + "Led.leftTheViewOnLocalEntry > followUp", 1),
                                                                        Map.entry(STATE_KEY + "QuorumWaiting.advanceOrPoll > followUp", 1),
                                                                        Map.entry(STATE_KEY + "QuorumWaiting.onEntered > followUp", 1),
-                                                                       Map.entry(STATE_KEY + "followUpKvLeader > followUp", 1));
+                                                                       Map.entry(STATE_KEY + "followUpKvLeader > followUp", 1),
+                                                                       Map.entry("LeaderPreVote.java:LeaderPreVote.verdict > dispatch", 1));
 
     /// The in-leader wrappers that reach `Fsm.dispatch` (memo S1(b)); lanes C, St and F delete them one by one (lane C1 adds `dispatchIfLive`, the handle's own route, INV-E P3).
     private static final Map<String, Integer> WRAPPER_SET = Map.ofEntries(Map.entry(CTX_KEY + "dispatchTransportView > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "shutdownInOrder > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "dispatchIfLive > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "submitInOrder > dispatchConfined", 2),
-                                                                          Map.entry("LeaderPreVote.java:LeaderPreVote.proceed > dispatchConfined", 1),
                                                                           Map.entry(STATE_KEY + "dispatchSelf > dispatchConfined", 1),
                                                                           Map.entry(STATE_KEY + "AwaitingKvSync.armGraceTimer > dispatchSelf", 1),
                                                                           Map.entry(STATE_KEY + "adoptLeaderFromKvIfPresent > dispatchSelf", 1),
