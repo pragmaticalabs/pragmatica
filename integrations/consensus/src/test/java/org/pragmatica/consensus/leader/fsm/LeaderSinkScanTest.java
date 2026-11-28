@@ -51,9 +51,10 @@ class LeaderSinkScanTest {
                                                                        Map.entry(STATE_KEY + "QuorumWaiting.onEntered > followUp", 1),
                                                                        Map.entry(STATE_KEY + "followUpKvLeader > followUp", 1));
 
-    /// The in-leader wrappers that reach `Fsm.dispatch` (memo S1(b)); lanes C, St and F delete them one by one.
+    /// The in-leader wrappers that reach `Fsm.dispatch` (memo S1(b)); lanes C, St and F delete them one by one (lane C1 adds `dispatchIfLive`, the handle's own route, INV-E P3).
     private static final Map<String, Integer> WRAPPER_SET = Map.ofEntries(Map.entry(CTX_KEY + "dispatchTransportView > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "shutdownInOrder > dispatchConfined", 1),
+                                                                          Map.entry(CTX_KEY + "dispatchIfLive > dispatchConfined", 1),
                                                                           Map.entry(CTX_KEY + "submitInOrder > dispatchConfined", 2),
                                                                           Map.entry("LeaderPreVote.java:LeaderPreVote.proceed > dispatchConfined", 1),
                                                                           Map.entry(STATE_KEY + "dispatchSelf > dispatchConfined", 1),
