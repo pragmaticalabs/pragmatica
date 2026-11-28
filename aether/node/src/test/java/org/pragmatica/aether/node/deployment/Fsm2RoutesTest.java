@@ -44,11 +44,13 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.VersionRoutingValue;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
+import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVNotificationRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
 import org.pragmatica.lang.Option;
@@ -166,10 +168,27 @@ class Fsm2RoutesTest {
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.Put(key, leader))), ++slot);
         }
 
+        /// Planted through applyEffects: production has no receipt writer and the applier refuses a receipt put and a lone removal by design
+        /// (#3860); the notification reaches the routes like a commit's.
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        void plantEffect(KVCommand effect) {
+            var raw = (KVStore) store;
+            var revision = raw.committedRevision();
+
+            raw.applyEffects(new ReplicaEntry(IncarnationTag.NONE, revision, revision, "plant", List.of(effect)));
+            slot = revision;
+        }
+
         /// A leader-authorized write: one `LeaderTransaction` under the committed leader, as the cluster FSM writes.
         @SuppressWarnings({"unchecked", "rawtypes"})
         void leaderPut(AetherKey key, AetherValue value) {
             var raw = (KVStore) store;
+
+            if (key instanceof AetherKey.DirectiveReceiptKey) {
+                plantEffect(new KVCommand.Put(key, value));
+                return;
+            }
+
             LeaderValue leader = (LeaderValue) raw.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
 
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.LeaderTransaction(key,
@@ -184,6 +203,12 @@ class Fsm2RoutesTest {
         @SuppressWarnings({"unchecked", "rawtypes"})
         void leaderRemove(AetherKey key) {
             var raw = (KVStore) store;
+
+            if (key instanceof AetherKey.DirectiveReceiptKey) {
+                plantEffect(new KVCommand.Remove(key, raw.get(key).map(v -> (Object) v)));
+                return;
+            }
+
             LeaderValue leader = (LeaderValue) raw.getTyped(LeaderKey.INSTANCE, LeaderValue.class).unwrap();
 
             raw.processCommitted(raw.createBatch(List.of(new KVCommand.LeaderTransaction(key,

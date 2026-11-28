@@ -23,12 +23,14 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.cluster.state.kvstore.IncarnationTag;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.ReplicaEntry;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcClock;
@@ -204,7 +206,9 @@ final class FsmHarness {
     /// `LeaderTransaction` for a `LeaderAuthorized` one. Notifications are delivered to the FSM like any other.
     @SuppressWarnings({"unchecked", "rawtypes"})
     void seed(AetherKey key, AetherValue value) {
-        if (value instanceof LeaderAuthorized) {
+        if (key instanceof AetherKey.DirectiveReceiptKey) {
+            plantEffect(new KVCommand.Put<AetherKey, AetherValue>(key, value));
+        } else if (value instanceof LeaderAuthorized) {
             var leader = committedLeader().or(new LeaderValue(SELF, 1L));
             var expected = store.get(key);
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, expected, Option.some(value));
@@ -223,7 +227,9 @@ final class FsmHarness {
     void seedRemove(AetherKey key) {
         var current = store.get(key);
 
-        if (current.isPresent() && current.or((AetherValue) null) instanceof LeaderAuthorized) {
+        if (key instanceof AetherKey.DirectiveReceiptKey) {
+            plantEffect(new KVCommand.Remove<AetherKey>(key, current.map(v -> (Object) v)));
+        } else if (current.isPresent() && current.or((AetherValue) null) instanceof LeaderAuthorized) {
             var leader = committedLeader().or(new LeaderValue(SELF, 1L));
             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key, current, Option.none());
 
@@ -235,6 +241,16 @@ final class FsmHarness {
         } else {
             applyCommand(new KVCommand.Remove<AetherKey>(key, current.map(v -> (Object) v)));
         }
+    }
+
+    /// Planted through applyEffects (the replica's plain-effect writer, which notifies like a commit): production has no receipt writer and the
+    /// applier refuses a receipt put and a lone receipt removal by design (#3860), so a fixture cannot reach the state any other way.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void plantEffect(KVCommand effect) {
+        var raw = (KVStore) store;
+        var revision = raw.committedRevision();
+
+        raw.applyEffects(new ReplicaEntry(IncarnationTag.NONE, revision, revision, "plant", List.of(effect)));
     }
 
     /// Seed without telling the FSM (state that already existed before it was activated).
