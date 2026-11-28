@@ -384,16 +384,14 @@ class IssueSideTripwireTest {
         settle(w);
 
         assertThat(w.present(KEY)).as("precondition: the same process rejoin is directed at this head").isTrue();
-        assertThat(w.stored(RECEIPT)).as(enable("departedWorker_directiveRemovedThenLeaderChange_newLeadersSweepRetiresRecordAndReceipt_thenSameProcessIsIssued")
-                                         + " (the issue writes a new receipt)")
-                                     .isEqualTo(org.pragmatica.lang.Option.some(WORKER_RECEIPT));
+        assertThat(w.present(RECEIPT)).as(enable("departedWorker_directiveRemovedThenLeaderChange_newLeadersSweepRetiresRecordAndReceipt_thenSameProcessIsIssued")
+                                          + " (the sweep retired the seeded receipt; the issue writes no new one)").isFalse();
     }
 
     @Disabled("#3828 part B: enable with the issue side (F2: the receipt is retired with the record, then the same process is issued a NEW receipt)")
     @Test
     void departedWorker_directiveRemovedThenLeaderChange_newLeadersSweepRetiresRecordAndReceipt_thenSameProcessIsIssued() {
         var w = departedWithReceipt();
-        var oldReceipt = w.stored(RECEIPT);
 
         w.h.seedRemove(KEY);
         w.h.drain();
@@ -406,7 +404,7 @@ class IssueSideTripwireTest {
         settle(w);
 
         assertThat(w.present(KEY)).as("the same process is issued again").isTrue();
-        assertThat(w.stored(RECEIPT)).as("with a new receipt").isEqualTo(oldReceipt);
+        assertThat(w.stored(RECEIPT)).as("with a new receipt").isEqualTo(org.pragmatica.lang.Option.some(WORKER_RECEIPT));
     }
 
     // -- round 3: (a) a live worker, (d) a re-admitted worker, (e) a retired id directed again ----------------------------------------------------
@@ -668,8 +666,9 @@ class IssueSideTripwireTest {
         return w;
     }
 
-    /// A directive draft is settled as failed and held; the re-derived draft commits; the operator removes the directive; the held draft commits
-    /// late. The directive draft's only expectation at this head is "directive absent", which holds, so the applier accepts it.
+    /// A directive draft is settled as failed and held; the re-derived draft commits (stood in by a seed of the pair, directive and receipt, as
+    /// the leader's issue writes them); the operator removes the directive; the held draft commits late. The held draft's only expectation at this
+    /// head is "directive absent", which holds, so the applier accepts it.
     private static MbWorld lateCommit() {
         var w = world();
 
@@ -683,15 +682,11 @@ class IssueSideTripwireTest {
 
         w.h.held.remove(earlier.correlationId());
         w.h.settleHeld(earlier, new Settlement.Failed("injected"));
-        var rederived = w.h.held.values()
-                         .stream()
-                         .filter(submit -> submit.kind() == SubmitKind.DIRECTIVE)
-                         .findFirst()
-                         .orElseThrow();
-
-        w.h.applyHeld(rederived.correlationId());
+        w.h.held.clear();
+        w.h.seed(KEY, ActivationDirectiveValue.worker("default-w-0", ""));
+        w.h.seed(RECEIPT, WORKER_RECEIPT);
         w.h.drain();
-        assertThat(w.present(KEY)).as("precondition: the re-derived draft committed the directive").isTrue();
+        assertThat(w.present(KEY)).as("precondition: the re-derived commit wrote the directive").isTrue();
         w.h.seedRemove(KEY);
         w.h.drain();
         assertThat(w.present(KEY)).as("precondition: the directive is removed").isFalse();
