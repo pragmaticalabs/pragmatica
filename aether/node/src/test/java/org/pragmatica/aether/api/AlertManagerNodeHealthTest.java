@@ -96,12 +96,12 @@ class AlertManagerNodeHealthTest {
         var manager = newManager();
         manager.onNodeFailed(FAILED, OBSERVER);
 
-        manager.forgetDepartureMarks(FAILED);
+        manager.forgetDepartureMarks(FAILED, _ -> true);
         assertThat(manager.getActiveNodeHealthAlerts()).as("the handshake resolved no alert").hasSize(1);
 
         var drained = new NodeId("drained-node");
         manager.noteMembershipTransition(drained, "DrainRequested");
-        manager.forgetDepartureMarks(drained);
+        manager.forgetDepartureMarks(drained, _ -> true);
         manager.onNodeFailed(drained, OBSERVER);
         assertThat(manager.getActiveNodeHealthAlerts()).as("the forgotten mark no longer suppresses a later death").hasSize(2);
     }
@@ -122,7 +122,7 @@ class AlertManagerNodeHealthTest {
     }
 
     /// #2061: `forgetDepartureMarks` ends the broadcast-drain bookkeeping together with the mark. A stale
-    /// `broadcastDrainSeen` entry would let the omission ageing expire a LATER local-FSM mark for the same node, which
+    /// record stamp would let the omission ageing expire a LATER local-FSM mark for the same node, which
     /// the drain record never created: a mid-drain mark would vanish and the drainee's planned departure would alert.
     @Test
     void forgetDepartureMarks_endsTheBroadcastDrainBookkeeping_soALaterLocalMarkIsNeverAgedOut() {
@@ -133,7 +133,7 @@ class AlertManagerNodeHealthTest {
         manager.observeDrainSet(java.util.Set.of(drainee), OBSERVER, seenAt, _ -> true, _ -> false);
         assertThat(manager.hasAnnouncedDeparture(drainee)).as("control: the drain record created the mark").isTrue();
 
-        manager.forgetDepartureMarks(drainee);
+        manager.forgetDepartureMarks(drainee, _ -> true);
         assertThat(manager.hasAnnouncedDeparture(drainee)).as("the handshake ended the mark").isFalse();
 
         manager.noteMembershipTransition(drainee, "DrainRequested");

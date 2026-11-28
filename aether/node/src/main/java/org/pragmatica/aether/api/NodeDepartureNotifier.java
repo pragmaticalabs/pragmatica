@@ -56,13 +56,11 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator,
     /// history, while a CRITICAL alert on a routine rolling restart is only noise.
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
-        if (alertManager.hasAnnouncedDeparture(departed)) {
+        if (alertManager.onNodeFailed(departed, self)) {
             aggregator.onAnnouncedDeparture(departed);
         } else {
             aggregator.onConfirmedDeparture(departed);
         }
-
-        alertManager.onNodeFailed(departed, self);
     }
 
     /// A configured member died on this node's view without ever being observed reachable (#1835). Raises
@@ -75,7 +73,7 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator,
     /// [`AlertManager#onNodeFailed`] consumes it for a reachable one.
     @Contract
     public void onNeverJoined(NodeId departed) {
-        alertManager.forgetDepartureMarks(departed);
+        alertManager.consumeDepartureMarks(departed);
         OperatorWarnings.raise(LOG,
                                warningSink,
                                OperatorWarningCode.NODE_NEVER_JOINED,

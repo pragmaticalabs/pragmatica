@@ -220,7 +220,7 @@ class NodeDepartureNotifierTest {
 
     /// #2315: a DEAD state is not drain-ended evidence, so the mark a drain record created for a node that dies never-reachable
     /// ends here, in the death's own consumer. Without it the mark and its tracking entry outlive the node. Deleting the
-    /// `forgetDepartureMarks` call in [`NodeDepartureNotifier#onNeverJoined`] turns this red.
+    /// `consumeDepartureMarks` call in [`NodeDepartureNotifier#onNeverJoined`] turns this red.
     @Test
     void neverJoined_endsTheMarkAndTheTrackingTheDrainRecordCreated() {
         var f = Fixture.create();

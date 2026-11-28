@@ -6,11 +6,11 @@ package org.pragmatica.aether.node.assembly;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.pragmatica.aether.api.AlertManager;
@@ -36,14 +36,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// stands for a thread acting between the observer's read and its write. Each thread's own code is the production code; only the
 /// interleaving is fixed, in one thread, in the order the report's path names.
 ///
-/// Each failing input is two tests: an ENABLED tripwire asserting today's behaviour (it goes red when the behaviour changes, and its
-/// message says what to enable), and the real assertion, `@Disabled` for lane B. A test without the `@Disabled` twin is a control.
+/// Each failing input of the #3858 round 2 report is one test; a `*Control_*` test is the neighbouring input that was never broken.
 ///
 /// Sites of the #3858 round 2 enumeration that no test in this class names, and why none can break the invariant [reading]:
 /// - C1 size cap (R-c): at the cap a new mark is refused and nothing is dropped, so it can only cost a spurious CRITICAL, the
-///   deliberate bias at `AlertManager#onNodeFailed`; it is no ordering against a DEAD edge. Marks leaked by R1 are what could fill it.
-/// - R-b (`containsKey` before the stamp in `markFromBroadcast`): it creates nothing; a consumer that ran between the put and the
-///   check leaves no stamp, and the re-creation after a consumer is R1, which the R1 tests reach.
+///   deliberate bias at `AlertManager#onNodeFailed`; it is no ordering against a DEAD edge. `DepartureMarksTest#atTheCap_*` pins it. Marks leaked by R1 are what could fill it.
+/// - R-b (the stamp written after the mark in the old `markFromBroadcast`): gone. The mark and the stamp are written in one section
+///   of `DepartureMarks`, ordered against the consumer's settle; `DepartureMarksTest` races the two.
 /// - R-d (`trackedDrainNodes`): a read-only count with no main caller; the R1 tests use it as the instrument.
 /// - D4 (field copies of the DEAD listeners, MembershipFsm:1405-1419, :1703-1705): plumbing; D2 and D3 are reached through the
 ///   notifier by every test here.
@@ -56,19 +55,18 @@ class PlannedDepartureMarkWindowTest {
     private static final NodeId NODE = new NodeId("drained");
     private static final long T0 = 1_000_000L;
     private static final long AFTER_THE_OMISSION_GRACE = T0 + AlertManager.DRAIN_OMISSION_GRACE_MS;
-    private static final String LANE_B = "#3858 round 2 lane B";
 
     private record World(MembershipFsm fsm, AlertManager alerts, ClusterEventAggregator aggregator) {
         Predicate<NodeId> drainEnded() {
             return DrainAssembly.nodeReadyAgain(() -> Map.of()).or(DrainAssembly.nodeUntracked(fsm));
         }
 
-        Predicate<NodeId> departed() {
-            return DrainAssembly.nodeDead(fsm);
+        Predicate<NodeId> holdsDeadLife() {
+            return DrainAssembly.nodeHoldsDeadLife(fsm);
         }
 
         void tick(Set<NodeId> drainSet, long nowMs) {
-            alerts.observeDrainSet(drainSet, SELF, nowMs, drainEnded(), departed());
+            alerts.observeDrainSet(drainSet, SELF, nowMs, drainEnded(), holdsDeadLife());
         }
 
         int notifications() {
@@ -97,10 +95,6 @@ class PlannedDepartureMarkWindowTest {
     @SuppressWarnings("unchecked")
     private static AlertManager alertManager() {
         return AlertManager.alertManager(Mockito.mock(RabiaNode.class), (KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class));
-    }
-
-    private static String fixed(String finding, String realTest) {
-        return "#3858 round 2 " + finding + " is fixed: delete this tripwire and enable " + realTest;
     }
 
     // ---- W1 (sites S1, D1, A1, A2, R-a): a directory scope change inside the DEAD window drops the mark ----
@@ -138,16 +132,7 @@ class PlannedDepartureMarkWindowTest {
         assertThat(w.alerts().getActiveNodeHealthAlerts()).as("control: a planned departure raised CRITICAL").isEmpty();
     }
 
-    /// Tripwire for W1: today the scope change plus the age-out tick drop the mark and the planned departure raises CRITICAL.
-    @Test
-    void w1Tripwire_scopeRetireInsideTheDeadWindow_todayRaisesCritical() {
-        var w = w1Run();
-
-        assertThat(w.alerts().getActiveNodeHealthAlerts()).as(fixed("W1", "w1_scopeRetireInsideTheDeadWindow_keepsThePlannedDepartureMark")).hasSize(1);
-    }
-
     /// Red when: the age-out drops the mark before the notifier reads it, and the planned departure raises CRITICAL.
-    @Disabled(LANE_B)
     @Test
     void w1_scopeRetireInsideTheDeadWindow_keepsThePlannedDepartureMark() {
         var w = w1Run();
@@ -155,7 +140,7 @@ class PlannedDepartureMarkWindowTest {
         assertThat(w.alerts().getActiveNodeHealthAlerts()).as("W1: a planned departure raised CRITICAL").isEmpty();
     }
 
-    // ---- W2 (sites C3, D1, R-a, `departed` = nodeDead): the first drain record inside the DEAD window is refused ----
+    // ---- W2 (sites C3, D1, R-a, `departed` = nodeHoldsDeadLife): the first drain record inside the DEAD window is refused ----
 
     private World w2Run() {
         var w = world(true);
@@ -179,16 +164,7 @@ class PlannedDepartureMarkWindowTest {
         assertThat(w.alerts().getActiveNodeHealthAlerts()).as("control: a planned departure raised CRITICAL").isEmpty();
     }
 
-    /// Tripwire for W2: today `departed` (state Dead) refuses the mark and the pending notification raises CRITICAL.
-    @Test
-    void w2Tripwire_firstSightingInsideTheDeadWindow_todayRaisesCritical() {
-        var w = w2Run();
-
-        assertThat(w.alerts().getActiveNodeHealthAlerts()).as(fixed("W2", "w2_firstSightingInsideTheDeadWindow_marksThePlannedDeparture")).hasSize(1);
-    }
-
-    /// Red when: `departed` refuses the mark, so the pending notification reads an unplanned departure and raises CRITICAL.
-    @Disabled(LANE_B)
+    /// Red when: the predicate refuses the mark, so the pending notification reads an unplanned departure and raises CRITICAL.
     @Test
     void w2_firstSightingInsideTheDeadWindow_marksThePlannedDeparture() {
         var w = w2Run();
@@ -199,21 +175,10 @@ class PlannedDepartureMarkWindowTest {
     // ---- R1 (sites C1, C3, A2/A3, D1-D3, A1): a mark re-created after its consumer ran outlives the node ----
 
     private World r1Run(World w, Runnable deadEdge) {
-        var raced = new AtomicBoolean();
-        var dead = w.departed();
-        Predicate<NodeId> racingDeparted = id -> {
-            var answer = dead.test(id);
-
-            if (id.equals(NODE) && raced.compareAndSet(false, true)) {
-                deadEdge.run();
-            }
-            return answer;
-        };
-
         w.tick(Set.of(NODE), T0);
-        w.alerts().observeDrainSet(Set.of(NODE), SELF, T0 + 1, w.drainEnded(), racingDeparted);
-        assertThat(raced.get()).as("instrument: the DEAD edge ran inside the tick").isTrue();
+        deadEdge.run();
         assertThat(w.fsm().memberStates()).as("instrument: the node is DEAD").containsEntry(NODE, "Dead");
+        w.tick(Set.of(NODE), T0 + 1);
         w.tick(Set.of(NODE), T0 + 2);
         w.tick(Set.of(), T0 + 2 + AlertManager.DRAIN_OMISSION_GRACE_MS);
 
@@ -236,19 +201,8 @@ class PlannedDepartureMarkWindowTest {
         return r1Run(w, () -> w.fsm().onJoinGraceExpired(NODE));
     }
 
-    /// Tripwire for R1 through the reachable DEAD edge (consumer A2): today the mark and the stamp stay after the omission grace.
-    @Test
-    void r1Tripwire_departedReadBeforeTheReachableDeadEdge_todayLeaksTheMarkAndTheStamp() {
-        var w = r1ReachableRun();
-        var fix = fixed("R1", "r1_departedReadBeforeTheReachableDeadEdge_leaksNoMarkAndNoStamp");
-
-        assertThat(w.alerts().hasAnnouncedDeparture(NODE)).as(fix).isTrue();
-        assertThat(w.alerts().trackedDrainNodes()).as(fix).isEqualTo(1);
-    }
-
     /// Red when: the mark and stamp re-created after their consumer ran outlive the node (a tracked DEAD node is never drain-ended,
     /// and no later DEAD edge comes).
-    @Disabled(LANE_B)
     @Test
     void r1_departedReadBeforeTheReachableDeadEdge_leaksNoMarkAndNoStamp() {
         var w = r1ReachableRun();
@@ -257,19 +211,7 @@ class PlannedDepartureMarkWindowTest {
         assertThat(w.alerts().trackedDrainNodes()).as("R1: tracking entries of a DEAD node after the omission grace").isZero();
     }
 
-    /// Tripwire for R1 through the never-reachable DEAD edge (consumer A3, `onNeverJoined` -> `forgetDepartureMarks`): the same
-    /// check-then-act, the other consumer.
-    @Test
-    void r1NeverReachableTripwire_departedReadBeforeTheNeverReachableDeadEdge_todayLeaksTheMarkAndTheStamp() {
-        var w = r1NeverReachableRun();
-        var fix = fixed("R1 (never-reachable consumer)", "r1NeverReachable_departedReadBeforeTheNeverReachableDeadEdge_leaksNoMarkAndNoStamp");
-
-        assertThat(w.alerts().hasAnnouncedDeparture(NODE)).as(fix).isTrue();
-        assertThat(w.alerts().trackedDrainNodes()).as(fix).isEqualTo(1);
-    }
-
     /// Red when: a mark and stamp re-created after the never-reachable edge's consumer ran outlive the node.
-    @Disabled(LANE_B)
     @Test
     void r1NeverReachable_departedReadBeforeTheNeverReachableDeadEdge_leaksNoMarkAndNoStamp() {
         var w = r1NeverReachableRun();
@@ -284,30 +226,108 @@ class PlannedDepartureMarkWindowTest {
         var w = world(true);
 
         w.tick(Set.of(NODE), T0);
-        w.fsm().onConfirmedDeparture(departed -> w.alerts().forgetDepartureMarks(departed));
+        w.fsm().onConfirmedDeparture(departed -> w.alerts().forgetDepartureMarks(departed, w.fsm()::noDeadEdgePending));
         w.fsm().onSwimDeparted(NODE, 1L);
         assertThat(w.notifications()).as("instrument: the notifier ran").isPositive();
 
         return w;
     }
 
-    /// Tripwire for A4: today a PeerJoined handshake that lands inside the window drops the mark, and the planned departure raises
-    /// CRITICAL. The doc at `AlertManager#forgetDepartureMarks` calls the early end deliberate (the bias toward a spurious CRITICAL);
-    /// [marked guess] whether the invariant admits it for an in-flight DEAD edge is lane B's ruling, and this test names the case.
-    @Test
-    void a4Tripwire_peerJoinedInsideTheDeadWindow_todayRaisesCritical() {
-        var w = a4Run();
-
-        assertThat(w.alerts().getActiveNodeHealthAlerts()).as(fixed("A4", "a4_peerJoinedInsideTheDeadWindow_keepsThePlannedDepartureMark")).hasSize(1);
-    }
-
     /// Red when: the handshake's drop ends the mark of a life whose DEAD edge is already in flight.
-    @Disabled(LANE_B)
     @Test
     void a4_peerJoinedInsideTheDeadWindow_keepsThePlannedDepartureMark() {
         var w = a4Run();
 
         assertThat(w.alerts().getActiveNodeHealthAlerts()).as("A4: a planned departure raised CRITICAL").isEmpty();
+    }
+
+    /// Control, A4: a handshake from a node the FSM no longer tracks, with no edge in flight, ends the mark: nothing would consume it.
+    @Test
+    void a4Control_peerJoinedForAnUntrackedNode_endsTheMark() {
+        var w = world(true);
+
+        w.tick(Set.of(NODE), T0);
+        w.fsm().setTrackingEligibility(id -> !id.equals(NODE));
+        assertThat(w.fsm().noDeadEdgePending(NODE)).as("instrument: nothing is pending for an untracked node").isTrue();
+        w.alerts().forgetDepartureMarks(NODE, w.fsm()::noDeadEdgePending);
+
+        assertThat(w.alerts().hasAnnouncedDeparture(NODE)).as("control: the handshake ended the mark").isFalse();
+    }
+
+    /// A4 for a node the FSM still tracks and has not killed: the handshake proves nothing about its DEAD edge, so the mark stays and
+    /// the edge that follows reads the planned departure.
+    @Test
+    void a4_peerJoinedForATrackedNode_keepsTheMarkForTheDeadEdgeToCome() {
+        var w = world(true);
+
+        w.tick(Set.of(NODE), T0);
+        w.alerts().forgetDepartureMarks(NODE, w.fsm()::noDeadEdgePending);
+        w.fsm().onSwimDeparted(NODE, 1L);
+
+        assertThat(w.alerts().getActiveNodeHealthAlerts()).as("A4: a planned departure raised CRITICAL").isEmpty();
+    }
+
+    /// A4, the scope change inside the window: the roster no longer shows the node, but its dispatch has not finished running the
+    /// hooks, so the FSM does not prove that no edge is pending and the handshake leaves the mark.
+    @Test
+    void a4_peerJoinedAfterAScopeRetireInsideTheDeadWindow_keepsThePlannedDepartureMark() {
+        var w = world(true);
+
+        w.tick(Set.of(NODE), T0);
+        w.fsm().onConfirmedDeparture(departed -> {
+            w.fsm().setTrackingEligibility(id -> !id.equals(departed));
+            w.alerts().forgetDepartureMarks(departed, w.fsm()::noDeadEdgePending);
+        });
+        w.fsm().onSwimDeparted(NODE, 1L);
+        assertThat(w.notifications()).as("instrument: the notifier ran").isPositive();
+
+        assertThat(w.alerts().getActiveNodeHealthAlerts()).as("A4: a planned departure raised CRITICAL").isEmpty();
+    }
+
+    // ---- S1 (site `setTrackingEligibility`): the node leaves the roster only after its running dispatch finished ----
+
+    /// A scope change on another thread waits for a dispatch of the node that is running its hooks (the tracking's guard), and the
+    /// node stays on the roster while it waits: retire first, remove second. Removing first would show the node absent while its DEAD
+    /// edge is still running.
+    @Test
+    void scopeRetire_waitsForTheRunningDispatch_beforeTheNodeLeavesTheRoster() throws InterruptedException {
+        var w = world(true);
+        var inHook = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        w.fsm().onConfirmedDeparture(_ -> holdHook(inHook, release));
+        var dispatcher = new Thread(() -> w.fsm().onSwimDeparted(NODE, 1L));
+        var scope = new Thread(() -> w.fsm().setTrackingEligibility(id -> !id.equals(NODE)));
+
+        dispatcher.start();
+        assertThat(inHook.await(10, TimeUnit.SECONDS)).as("instrument: the hook is running").isTrue();
+        scope.start();
+        awaitBlocked(scope);
+        var rosterWhileWaiting = w.fsm().memberStates();
+        release.countDown();
+        dispatcher.join();
+        scope.join();
+
+        assertThat(rosterWhileWaiting).as("the node stays on the roster while its dispatch runs").containsKey(NODE);
+        assertThat(w.fsm().memberStates()).as("the scope change took effect once the dispatch finished").doesNotContainKey(NODE);
+    }
+
+    private static void holdHook(CountDownLatch inHook, CountDownLatch release) {
+        inHook.countDown();
+        try {
+            release.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static void awaitBlocked(Thread thread) {
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (thread.getState() != Thread.State.BLOCKED && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(thread.getState()).as("instrument: the scope change is waiting on the dispatch").isEqualTo(Thread.State.BLOCKED);
     }
 
     // ---- C2 (site `noteMembershipTransition` from the FSM transition listener, MembershipAssembly:298) ----

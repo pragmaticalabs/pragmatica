@@ -176,9 +176,9 @@ class AetherNodeOperatorDrainClearTest {
 
         assertThat(code).containsOnlyOnce("drainCommandRegistry.bindSubject(drainSubject(swimHealthDetector,membershipFsm));");
         assertThat(code).containsOnlyOnce("nodeReadyAgain(metricsCollector::reportedStates).or(nodeUntracked(membershipFsm))");
-        assertThat(code).containsOnlyOnce("departed=nodeDead(membershipFsm);");
-        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded,departed))");
-        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded,departed));");
+        assertThat(code).containsOnlyOnce("holdsDeadLife=nodeHoldsDeadLife(membershipFsm);");
+        assertThat(code).containsOnlyOnce("setDrainSetObserver(drainSetObserver(alertManager,config.self(),drainEnded,holdsDeadLife))");
+        assertThat(code).containsOnlyOnce("drainCommandRegistry::drainTargets,drainSetObserver(alertManager,config.self(),drainEnded,holdsDeadLife));");
         assertThat(code).containsOnlyOnce("topologyDrains.sink(fsmDrainRequested(membershipFsmRef)),");
         assertThat(code).containsOnlyOnce("topologyDrains::clear,");
     }

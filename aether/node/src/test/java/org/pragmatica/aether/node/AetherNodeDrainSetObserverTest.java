@@ -57,13 +57,17 @@ class AetherNodeDrainSetObserverTest {
     }
 
     @Test
-    void drainSet_neverMarksANodeTheDepartedPredicateHolds_andMarksTheOthers() {
+    void drainSet_marksANodeTheFsmHoldsDeadUntilItsConsumerRan_thenNeverAgain() {
         var alerts = alerts();
+        var tick = DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, DRAINED::equals);
 
-        DrainAssembly.drainSetObserver(alerts, SELF, NOT_READY, DRAINED::equals).accept(Set.of(DRAINED, OTHER));
-
-        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its life is over on this observer").isFalse();
+        tick.accept(Set.of(DRAINED, OTHER));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its DEAD edge may still be in flight: the consumer reads the mark").isTrue();
         assertThat(alerts.hasAnnouncedDeparture(OTHER)).isTrue();
+
+        alerts.onNodeFailed(DRAINED, SELF);
+        tick.accept(Set.of(DRAINED));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("its life is over on this observer: nothing re-creates the mark").isFalse();
     }
 
     @Test
@@ -234,28 +238,6 @@ class AetherNodeDrainSetObserverTest {
         assertThat(alerts.trackedDrainNodes()).isZero();
     }
 
-    /// A node whose only tracking is the broadcast timestamp is still tracked: the count is the union of both maps, so a timestamp
-    /// that outlives its mark (the interleaving of a ping's mark-and-stamp with a DEAD edge's removal) is visible in the count, not
-    /// hidden by it. No sequential call reaches that state (the stamp is only put while the mark exists, and every removal takes both),
-    /// so the test plants the stamp through the field: the one place a test can stand for the race.
-    @Test
-    void trackedDrainNodes_countsANodeHoldingOnlyTheBroadcastTimestamp() throws ReflectiveOperationException {
-        var alerts = alerts();
-
-        plantBroadcastTimestampOnly(alerts, DRAINED);
-
-        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("instrument: no announced-departure mark is held").isFalse();
-        assertThat(alerts.trackedDrainNodes()).isEqualTo(1);
-    }
-
-    @SuppressWarnings("unchecked")
-    private static void plantBroadcastTimestampOnly(AlertManager alerts, NodeId node) throws ReflectiveOperationException {
-        var field = AlertManager.class.getDeclaredField("broadcastDrainSeen");
-
-        field.setAccessible(true);
-        ((Map<String, Long>) field.get(alerts)).put(node.id(), 0L);
-    }
-
     /// Failure input (d), the churn sequence: many drained nodes die without reporting; three drains stay in flight. The
     /// tracked count is the in-flight drains, never the distinct ids ever seen.
     @Test
@@ -277,7 +259,7 @@ class AetherNodeDrainSetObserverTest {
     void pingNamingTheNodeAfterTheDeadEdge_createsNoMark_whenTheFsmHoldsItDead() {
         var alerts = alerts();
         var fsm = fsmHoldingDead(DRAINED);
-        var departed = DrainAssembly.nodeDead(fsm);
+        var departed = DrainAssembly.nodeHoldsDeadLife(fsm);
 
         alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, NOT_READY, NOT_DEPARTED);
         alerts.onNodeFailed(DRAINED, SELF);
@@ -293,7 +275,7 @@ class AetherNodeDrainSetObserverTest {
     void markOfADeadNodeWhoseDepartureIsPending_survivesPingsAndTheOmissionGrace() {
         var alerts = alerts();
         var fsm = fsmHoldingDead(DRAINED);
-        var departed = DrainAssembly.nodeDead(fsm);
+        var departed = DrainAssembly.nodeHoldsDeadLife(fsm);
         var ended = DrainAssembly.nodeReadyAgain(() -> Map.of()).or(DrainAssembly.nodeUntracked(fsm));
 
         alerts.observeDrainSet(Set.of(DRAINED), SELF, 0L, ended, NOT_DEPARTED);
@@ -315,8 +297,8 @@ class AetherNodeDrainSetObserverTest {
     void nodeDead_isFalseForAMemberAndForAnUnknownNode() {
         var fsm = fsmHoldingDead(DRAINED);
 
-        assertThat(DrainAssembly.nodeDead(fsm).test(OTHER)).isFalse();
-        assertThat(DrainAssembly.nodeDead(fsm).test(DRAINED)).isTrue();
+        assertThat(DrainAssembly.nodeHoldsDeadLife(fsm).test(OTHER)).isFalse();
+        assertThat(DrainAssembly.nodeHoldsDeadLife(fsm).test(DRAINED)).isTrue();
     }
 
     private static NodeId nodeNamed(int i) {
