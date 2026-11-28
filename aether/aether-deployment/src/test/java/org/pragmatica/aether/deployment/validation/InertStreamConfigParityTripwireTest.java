@@ -95,6 +95,28 @@ class InertStreamConfigParityTripwireTest {
             .isFalse();
     }
 
+    /// S2a1-6c (T-147): a per-group `auto_offset_reset = "latest"` has no runtime effect until S1a, so it is a refusal (`NotYetAvailable`), not
+    /// an inert key: the validator names the gate, and the activation binder must not accept the section either.
+    @Test
+    void consumerLatestOffsetReset_isNotIgnoredSilentlyAtActivation() {
+        var toml = consumerSection("auto_offset_reset = \"latest\"");
+        var gate = "[streams.orders]::" + StreamResourceValidator.RULE_NOT_YET_AVAILABLE;
+
+        assertThat(rejectedRules(toml)).as("control: the deploy validator refuses the publish, naming the gate").contains(gate);
+        assertThat(rejectedRules(toml).contains(gate) && StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess())
+            .as("the validator refuses a per-group `latest`, yet the activation binder accepts the section; satisfied by making the key effective (S1a); deleting the validation also satisfies it and is NOT the fix")
+            .isFalse();
+    }
+
+    /// Control for the arm above: `earliest` is the default, so both paths accept it.
+    @Test
+    void consumerEarliestOffsetReset_isAcceptedOnBothPaths() {
+        var toml = consumerSection("auto_offset_reset = \"earliest\"");
+
+        assertThat(rejectedRules(toml)).isEmpty();
+        assertThat(StreamSectionBinding.bindStreamSection(providerOf(toml), "streams.orders", ACTIVATION).isSuccess()).isTrue();
+    }
+
     private static String streamSection(String line) {
         return """
                [streams.orders]

@@ -19,6 +19,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.ConsumerConfig;
 import org.pragmatica.aether.slice.ReplicationContext;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.ReplicationFactorsError;
 import org.pragmatica.aether.slice.ReplicationWarning;
 import org.pragmatica.aether.slice.StreamConfig;
@@ -165,6 +166,7 @@ public sealed interface StreamResourceValidator {
         if (failures.isEmpty()) {
             collectMultiVersionWarnings(resources, resourcesConfig, roleHints, warnings);
             collectReplicationWarnings(resources, resourcesConfig, replication, warnings);
+            collectDeclarationWarnings(resources, resourcesConfig, replication, warnings);
         }
 
         if (failures.isEmpty()) {
@@ -285,6 +287,7 @@ public sealed interface StreamResourceValidator {
         rejected.addAll(namespaceFailures);
         collectMultiVersionWarnings(accepted, resourcesConfig, roleHints, warnings);
         collectReplicationWarnings(accepted, resourcesConfig, replication, warnings);
+        collectDeclarationWarnings(accepted, resourcesConfig, replication, warnings);
 
         return Result.success(StreamValidationPartition.streamValidationPartition(accepted, rejected, warnings));
     }
@@ -665,6 +668,42 @@ public sealed interface StreamResourceValidator {
                                                                                                                                         + "'",
                                                                                                                                          owned.config()
                                                                                                                                               .replication())))));
+    }
+
+    /// S2a1-6c: the declaration warnings of every ACCEPTED owned section ([#declarationWarnings]), beside the replication ones.
+    private static void collectDeclarationWarnings(Map<String, StreamResource> accepted,
+                                                   Option<String> resourcesConfig,
+                                                   ReplicationContext replication,
+                                                   List<StreamValidationWarning> warnings) {
+        resourcesConfig.onPresent(toml -> warnings.addAll(declarationWarnings(accepted, toml, replication.defaults())));
+    }
+
+    /// The declaration warnings (the hot-window clamp, `all` with `max_count`) of the owned sections of `toml` that are in
+    /// `accepted`, one [StreamValidationWarning] each: the field is the section, the rule the warning's code (these are not
+    /// operator warning codes). Public so the mapping is pinned on its own: until S2a3 and S2b wire `[retention]` and `[hot]`,
+    /// the inert gate rejects every stream that can raise one, so no deploy reaches this with a warning yet.
+    static List<StreamValidationWarning> declarationWarnings(Map<String, StreamResource> accepted,
+                                                             String toml,
+                                                             ReplicationFactors defaults) {
+        return StreamConfigParser.declarationWarnings(toml, defaults)
+                                 .entrySet()
+                                 .stream()
+                                 .sorted(Map.Entry.comparingByKey())
+                                 .filter(entry -> acceptedOwned(accepted,
+                                                                entry.getKey()))
+                                 .flatMap(entry -> entry.getValue()
+                                                        .stream()
+                                                        .map(warning -> StreamValidationWarning.streamValidationWarning("[streams." + entry.getKey()
+                                                                                                                       + "]",
+                                                                                                                        warning.code(),
+                                                                                                                        warning.message())))
+                                 .toList();
+    }
+
+    private static boolean acceptedOwned(Map<String, StreamResource> accepted, String alias) {
+        return Option.option(accepted.get(alias))
+                     .filter(StreamResource.Owned.class::isInstance)
+                     .isPresent();
     }
 
     private static String addressRule(ResourceAddressError.General address) {

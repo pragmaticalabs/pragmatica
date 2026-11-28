@@ -3,10 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.stream;
 
+import java.util.List;
 import java.util.function.LongUnaryOperator;
+import java.util.stream.Stream;
 
+import org.pragmatica.aether.slice.HotWindowDeclaration;
 import org.pragmatica.aether.slice.RetentionDeclaration;
 import org.pragmatica.aether.slice.RetentionMode;
+import org.pragmatica.aether.slice.StreamDeclaration;
 import org.pragmatica.lang.Option;
 
 import static org.pragmatica.lang.Option.none;
@@ -28,6 +32,12 @@ import static org.pragmatica.lang.Option.some;
 /// seal_run_events`, a record count, whatever the mode and whether or not an age bound is declared), event (`s(p) <
 /// max_event_size`). The first failing arm is the refusal; each names the bound that sets the share and the smallest
 /// value of that bound that clears the arm for this `P`.
+///
+/// RESOLUTION. After the refusals ([#shareRefusal] and the hot-window floors) the declaration is resolved last by [#resolve]:
+/// `hot.max_bytes` above the share is lowered to it, with one [DeclarationWarning], and `mode = "all"` with `max_count`
+/// raises one more. `hot.max_count` is never clamped (a ring holding more records than the count share keeps the newest
+/// ones readable longer, which the window allows), and with no share computable nothing is clamped. Because the refusals ran
+/// first, a clamped ring is never below `max_event_size` nor below two seal runs.
 public sealed interface DeclarationBounds {
     /// The factor over the unit a window must reach: two seal runs for the hot window, two merged segments or two seal
     /// runs' records for a retention share.
@@ -80,11 +90,71 @@ public sealed interface DeclarationBounds {
         return saturatingMultiply(FACTOR, DeclarationDefaults.SEAL_RUN_EVENTS);
     }
 
+    /// A declaration after the clamp, with the warnings the resolution raised.
+    record Resolution(StreamDeclaration declaration, List<DeclarationWarning> warnings) {
+        static Resolution resolution(StreamDeclaration declaration, List<DeclarationWarning> warnings) {
+            return new Resolution(declaration, List.copyOf(warnings));
+        }
+    }
+
+    /// `declared` for a stream of `partitions` partitions and events up to `maxEventSize` bytes, after the refusals: the hot
+    /// window clamped to the share ([#share]) and the warnings raised, clamp first.
+    static Resolution resolve(String alias, StreamDeclaration declared, int partitions, long maxEventSize) {
+        var share = declared.retention().flatMap(retention -> share(retention, partitions, maxEventSize));
+        var hotBytes = declared.hot().flatMap(HotWindowDeclaration::maxBytes);
+        var clamp = Option.all(hotBytes, share).flatMap((bytes, bound) -> clampOf(alias, bytes, bound));
+        var allCount = declared.retention()
+                               .flatMap(retention -> allCountWarning(alias, retention, partitions, maxEventSize));
+
+        return Resolution.resolution(clamp.fold(() -> declared, hotClamp -> withHotBytes(declared, hotClamp.share())),
+                                     Stream.of(clamp.map(Clamp::warning), allCount).flatMap(Option::stream).toList());
+    }
+
+    /// A hot window above its share: the share it is lowered to and the warning that says so.
+    record Clamp(long share, DeclarationWarning warning) {
+        static Clamp clamp(long share, DeclarationWarning warning) {
+            return new Clamp(share, warning);
+        }
+    }
+
+    private static Option<Clamp> clampOf(String alias, long hotBytes, Bound share) {
+        return hotBytes > share.share()
+               ? some(Clamp.clamp(share.share(),
+                                  DeclarationWarning.hotWindowClamped(alias, hotBytes, share.share(), share.key())))
+               : none();
+    }
+
+    private static StreamDeclaration withHotBytes(StreamDeclaration declared, long hotBytes) {
+        return StreamDeclaration.streamDeclaration(declared.retention(),
+                                                   declared.truncation(),
+                                                   declared.hot()
+                                                           .map(window -> HotWindowDeclaration.hotWindowDeclaration(some(hotBytes),
+                                                                                                                    window.maxCount())),
+                                                   declared.expectedIngressBytesPerSecond(),
+                                                   declared.storage());
+    }
+
+    private static Option<DeclarationWarning> allCountWarning(String alias,
+                                                              RetentionDeclaration retention,
+                                                              int partitions,
+                                                              long maxEventSize) {
+        return retention.mode()
+                        .filter(mode -> mode == RetentionMode.ALL)
+                        .flatMap(_ -> retention.maxCount())
+                        .map(count -> DeclarationWarning.allCountSizedByMaxEvent(alias,
+                                                                                 count,
+                                                                                 perPartition(count, partitions),
+                                                                                 maxEventSize,
+                                                                                 saturatingMultiply(perPartition(count,
+                                                                                                                 partitions),
+                                                                                                    maxEventSize)));
+    }
+
     /// The first failing share arm of `retention` for a stream of `partitions` partitions and events up to `maxEventSize`
     /// bytes, in the order byte, count, event; empty when every arm clears. A declaration with no computable share and no
     /// `max_count` (an age bound alone, or `all` with an age bound and no count) is never refused here.
     static Option<ShareRefusal> shareRefusal(RetentionDeclaration retention, int partitions, long maxEventSize) {
-        var setting = settingBound(retention, partitions, maxEventSize);
+        var setting = share(retention, partitions, maxEventSize);
 
         return byteArm(setting).orElse(() -> countArm(retention, partitions))
                       .orElse(() -> eventArm(setting, maxEventSize));
@@ -123,7 +193,7 @@ public sealed interface DeclarationBounds {
 
     /// The bound that sets `s(p)`: the smallest computable one under `any`, the largest under `all`, none when `all` has an
     /// age bound (not computable) or no byte or count bound is declared. A tie goes to `max_bytes`.
-    private static Option<Bound> settingBound(RetentionDeclaration retention, int partitions, long maxEventSize) {
+    static Option<Bound> share(RetentionDeclaration retention, int partitions, long maxEventSize) {
         var largest = retention.mode().or(DeclarationDefaults.DEFAULT_MODE) == RetentionMode.ALL;
         var bytes = retention.maxBytes().map(total -> byteBound(total, partitions));
         var count = retention.maxCount().map(total -> countBound(total, partitions, maxEventSize));

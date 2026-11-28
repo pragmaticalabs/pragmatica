@@ -34,7 +34,9 @@ import org.pragmatica.aether.slice.TruncationDeclaration;
 import org.pragmatica.aether.slice.TruncationPolicy;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.DeclarationBounds;
+import org.pragmatica.aether.slice.stream.DeclarationBounds.Resolution;
 import org.pragmatica.aether.slice.stream.DeclarationDefaults;
+import org.pragmatica.aether.slice.stream.DeclarationWarning;
 import org.pragmatica.aether.slice.stream.RingGeometry;
 import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.slice.stream.StreamResource;
@@ -330,8 +332,10 @@ public interface StreamConfigParser {
         }
 
         if (sourceOpt.isPresent()) {
-            return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> refuseDashedConsumerSections(doc,
-                                                                                                                                    streamName))
+            var declared = StreamSection.tomlSection(doc, section, streamName);
+
+            return refuseUnknownKeys(declared).flatMap(_ -> refuseDashedConsumerSections(doc, streamName))
+                                    .flatMap(_ -> refuseNotYetAvailable(declared))
                                     .flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
                                                                  source -> parseExternalResource(streamName,
                                                                                                  source,
@@ -494,42 +498,79 @@ public interface StreamConfigParser {
                                 .flatMap(valid -> parseStreamSection(valid, defaults))
                                 .flatMap(declared -> validatePartitionCeiling(section.alias(),
                                                                               declared.config()).map(_ -> declared))
-                                .flatMap(declared -> refuseNotYetAvailable(section.alias(),
-                                                                           declared));
+                                .flatMap(declared -> refuseNotYetAvailable(section).map(_ -> declared));
     }
 
     /// The T-146 gate: `truncation.policy = "until_consumed"` is refused, not stored, until release S3 lands the behaviour
-    /// (no accept-and-ignore window). It runs after every other refusal, so a section that is malformed in any other way
-    /// reports that refusal first. S3 deletes this method and its tripwire test.
-    private static Result<DeclaredStream> refuseNotYetAvailable(String alias, DeclaredStream declared) {
-        var untilConsumed = declared.config()
-                                    .declaration()
-                                    .flatMap(StreamDeclaration::truncation)
-                                    .flatMap(TruncationDeclaration::policy)
-                                    .filter(TruncationPolicy.UNTIL_CONSUMED::equals)
-                                    .isPresent();
-
-        return untilConsumed
-               ? new StreamDeclarationError.NotYetAvailable(alias, "truncation.policy", "S3").result()
-               : success(declared);
+    /// (no accept-and-ignore window), and `expected_ingress` is refused whatever its value until the footprint step (S5).
+    /// It is the ONE gate of both branches of a `[streams.<alias>]` section: the owned branch runs it after every other
+    /// refusal ([#parseStreamDeclaration]), so a section that is malformed in any other way reports that refusal first; the
+    /// external (`source = ...`) branch runs it last too, after the unknown-key and dashed-consumer-section refusals
+    /// ([#parseDeclaredResource]), because an external alias is never parsed into a [StreamConfig] but still carries these
+    /// known keys. It reads the section by value (not by key listing), so a key supplied by any configuration layer counts,
+    /// and it reads the policy as the parse does ([#declaredPolicy], one normalisation for the gate and the consumer), so
+    /// `" Until_Consumed "` is refused like `until_consumed`; a policy value the parse cannot read is
+    /// refused as malformed. S3 deletes its half of this method and its tripwire test; S5 deletes the `expected_ingress`
+    /// half ([#EXPECTED_INGRESS_KEY]) and its tripwire.
+    private static Result<StreamSection> refuseNotYetAvailable(StreamSection section) {
+        return declaredPolicy(section).flatMap(policy -> refuseUntilConsumed(section, policy));
     }
 
-    /// A parsed stream declaration: the config, its factors resolved, and the warnings they raised.
-    record DeclaredStream(StreamConfig config, List<ReplicationWarning> warnings) {
+    /// The `until_consumed` half of the gate, decided on the parsed [TruncationPolicy] ([#declaredPolicy], through
+    /// [StreamValues#oneOf]), the value the consumer reads, never on the raw text.
+    private static Result<StreamSection> refuseUntilConsumed(StreamSection section, Option<TruncationPolicy> policy) {
+        return policy.filter(TruncationPolicy.UNTIL_CONSUMED::equals)
+                     .isPresent()
+               ? new StreamDeclarationError.NotYetAvailable(section.alias(), "truncation.policy", "S3").result()
+               : refuseExpectedIngress(section);
+    }
+
+    /// `expected_ingress` is a plan input that the footprint step (S5) reads, so until then it is a known key that is refused
+    /// whatever its value (`NotYetAvailable`), never accepted and ignored, and nothing is stored: the parse of its `<size>/s`
+    /// value waits for that step.
+    private static Result<StreamSection> refuseExpectedIngress(StreamSection section) {
+        return section.string(EXPECTED_INGRESS_KEY)
+                      .isPresent()
+               ? new StreamDeclarationError.NotYetAvailable(section.alias(), EXPECTED_INGRESS_KEY, "S5").result()
+               : success(section);
+    }
+
+    /// A parsed stream declaration: the config, its factors resolved, the replication warnings they raised and the
+    /// declaration warnings the storage declaration raised (the hot-window clamp, `all` with `max_count`).
+    record DeclaredStream(StreamConfig config,
+                          List<ReplicationWarning> warnings,
+                          List<DeclarationWarning> declarationWarnings) {
         public DeclaredStream {
             warnings = List.copyOf(warnings);
+            declarationWarnings = List.copyOf(declarationWarnings);
+        }
+
+        public DeclaredStream(StreamConfig config, List<ReplicationWarning> warnings) {
+            this(config, warnings, List.of());
         }
     }
 
     /// Deploy-time (#1564): the replication warnings of every owned `[streams.X]` section of `toml` that
     /// parses, by alias. Sections that fail to parse are reported by the parse itself, not here.
     static Map<String, List<ReplicationWarning>> replicationWarnings(String toml, ReplicationFactors defaults) {
-        var warnings = new LinkedHashMap<String, List<ReplicationWarning>>();
+        return ownedWarnings(toml, defaults, DeclaredStream::warnings);
+    }
+
+    /// Deploy-time (#3333, S2a1-6c): the declaration warnings (the hot-window clamp, `all` with `max_count`) of every owned
+    /// `[streams.X]` section of `toml` that parses, by alias, as [#replicationWarnings] reports the replication ones.
+    static Map<String, List<DeclarationWarning>> declarationWarnings(String toml, ReplicationFactors defaults) {
+        return ownedWarnings(toml, defaults, DeclaredStream::declarationWarnings);
+    }
+
+    private static <W> Map<String, List<W>> ownedWarnings(String toml,
+                                                          ReplicationFactors defaults,
+                                                          Functions.Fn1<List<W>, DeclaredStream> warningsOf) {
+        var warnings = new LinkedHashMap<String, List<W>>();
 
         TomlParser.parse(toml).onSuccess(doc -> doc.sectionNames()
                                                    .stream()
                                                    .filter(StreamConfigParser::isOwnedStreamSection)
-                                                   .forEach(name -> ownedSectionWarnings(doc, name, defaults).filter(list -> !list.isEmpty())
+                                                   .forEach(name -> ownedSectionWarnings(doc, name, defaults, warningsOf).filter(list -> !list.isEmpty())
                                                                                         .onPresent(list -> warnings.put(name.substring(STREAMS_PREFIX.length()),
                                                                                                                         list))));
 
@@ -541,9 +582,10 @@ public interface StreamConfigParser {
                                                            .contains(".");
     }
 
-    private static Option<List<ReplicationWarning>> ownedSectionWarnings(TomlDocument doc,
-                                                                         String sectionName,
-                                                                         ReplicationFactors defaults) {
+    private static <W> Option<List<W>> ownedSectionWarnings(TomlDocument doc,
+                                                            String sectionName,
+                                                            ReplicationFactors defaults,
+                                                            Functions.Fn1<List<W>, DeclaredStream> warningsOf) {
         return doc.getString(sectionName, "source")
                   .isPresent()
                ? Option.none()
@@ -551,8 +593,12 @@ public interface StreamConfigParser {
                                                                   sectionName,
                                                                   sectionName.substring(STREAMS_PREFIX.length())),
                                         defaults).option()
-                                       .map(DeclaredStream::warnings);
+                                       .map(warningsOf);
     }
+
+    /// The stream-level plan input of the footprint step (stream-storage-design 2.1 item 4): a known key, refused with
+    /// [StreamDeclarationError.NotYetAvailable] until that step reads it ([#refuseExpectedIngress]).
+    String EXPECTED_INGRESS_KEY = "expected_ingress";
 
     /// Every key [#parseStreamConfig] reads directly under `[streams.<alias>]`, including the keys the
     /// resource-level parse reads (`version`, `source`, `role`). Sub-sections are not keys of the section.
@@ -572,11 +618,12 @@ public interface StreamConfigParser {
                                                ReplicationDeclaration.FACTOR_KEY,
                                                ReplicationDeclaration.CONFIRMATION_KEY,
                                                "compression",
-                                               "encryption_key_id");
+                                               "encryption_key_id",
+                                               EXPECTED_INGRESS_KEY);
 
     /// Every key [#parseDeclaration] reads from the `[retention]`, `[truncation]` and `[hot]` sub-sections of a stream
     /// (stream-storage-design 2.1), in the dotted form [StreamSection#keys] reports. `expected_ingress` is not one of
-    /// them: it stays an unknown key until its own step reads it.
+    /// them: it is a stream-level key ([#EXPECTED_INGRESS_KEY]) that no sub-section carries.
     List<String> DECLARATION_SECTION_KEYS = List.of("retention.max_age",
                                                     "retention.max_bytes",
                                                     "retention.max_count",
@@ -616,7 +663,8 @@ public interface StreamConfigParser {
                                                  "on_failure",
                                                  "max_retries",
                                                  "dead_letter",
-                                                 "read_preference");
+                                                 "read_preference",
+                                                 "auto_offset_reset");
 
     /// The keys of [#STREAM_SECTION_KEYS] whose values are integers.
     List<String> INTEGER_KEYS = List.of("partitions",
@@ -759,15 +807,18 @@ public interface StreamConfigParser {
                                            .map(ReplicationDeclaration::replicationDeclaration)
                                            .flatMap(declaration -> declaration.resolve(defaults))
                                            .mapError(cause -> new StreamDeclarationError.ReplicationRefused(alias, cause))
-                                           .flatMap(resolved -> assemble(section,
-                                                                         partitions,
-                                                                         retention,
-                                                                         maxEventSize,
-                                                                         consistency,
-                                                                         resolved.factors(),
-                                                                         compression,
-                                                                         storageDeclaration).map(config -> new DeclaredStream(config,
-                                                                                                                              resolved.warnings()))));
+                                           .flatMap(resolved -> Result.all(assemble(section,
+                                                                                    partitions,
+                                                                                    retention,
+                                                                                    maxEventSize,
+                                                                                    consistency,
+                                                                                    resolved.factors(),
+                                                                                    compression,
+                                                                                    storageDeclaration.map(Resolution::declaration)),
+                                                                           storageDeclaration.map(Resolution::warnings))
+                                                                      .map((config, declarationWarnings) -> new DeclaredStream(config,
+                                                                                                                               resolved.warnings(),
+                                                                                                                               declarationWarnings))));
     }
 
     private static Result<StreamConfig> assemble(StreamSection section,
@@ -936,21 +987,26 @@ public interface StreamConfigParser {
 
     /// [#parseDeclaration], then the shape refusals, then the floors ([#refuseBelowBounds]): the first failure is the cause, so
     /// a section malformed in another way reports that refusal first, and a well-formed `until_consumed` block with a low
-    /// `[hot]` reports the floor before the T-146 gate ([#refuseNotYetAvailable]) runs.
-    private static Result<StreamDeclaration> parseCheckedDeclaration(StreamSection section,
-                                                                     int partitions,
-                                                                     long maxEventSize) {
+    /// `[hot]` reports the floor before the T-146 gate ([#refuseNotYetAvailable]) runs. The refusals run on the declared values;
+    /// the clamp and its warnings come last ([DeclarationBounds#resolve]), so nothing is clamped that a refusal would have named.
+    private static Result<Resolution> parseCheckedDeclaration(StreamSection section,
+                                                              int partitions,
+                                                              long maxEventSize) {
         return parseDeclaration(section, partitions, maxEventSize).flatMap(declared -> refuseTruncationShape(section.alias(),
                                                                                                              declared))
                                .flatMap(declared -> refuseBelowBounds(section.alias(),
                                                                       partitions,
                                                                       maxEventSize,
-                                                                      declared));
+                                                                      declared))
+                               .map(declared -> DeclarationBounds.resolve(section.alias(),
+                                                                          declared,
+                                                                          partitions,
+                                                                          maxEventSize));
     }
 
     /// The resolved declaration against the seal and ring floors (stream-storage-design 2.2), on the values the stream will run
     /// with (a default counts as a value): the hot window against the seal runs, then against `max_event_size`, then the
-    /// retention share, then `hot.max_count` against the ring's index capacity. Refuses, never clamps (the clamp is 6c's).
+    /// retention share, then `hot.max_count` against the ring's index capacity. Refuses, never clamps ([DeclarationBounds#resolve] clamps after it).
     private static Result<StreamDeclaration> refuseBelowBounds(String alias,
                                                                int partitions,
                                                                long maxEventSize,
@@ -1225,17 +1281,45 @@ public interface StreamConfigParser {
     }
 
     /// An External stream's consumer tables are not parsed into configs, but a dashed key in one is still refused,
-    /// the same as under an owned stream: no consumer key is silently ignored.
+    /// the same as under an owned stream: no consumer key is silently ignored. A per-group `auto_offset_reset` is gated the
+    /// same way ([#refuseUnavailableOffsetReset]).
     private static Result<Unit> refuseDashedConsumerSections(TomlDocument doc, String streamName) {
         var consumerPrefix = STREAMS_PREFIX + streamName + ".consumers.";
 
         return consumerSectionNames(doc, streamName).stream()
-                                   .map(sectionName -> refuseDashedConsumerKeys(doc,
-                                                                                streamName,
-                                                                                sectionName,
-                                                                                sectionName.substring(consumerPrefix.length())))
+                                   .map(sectionName -> refuseConsumerKeys(doc,
+                                                                          streamName,
+                                                                          sectionName,
+                                                                          sectionName.substring(consumerPrefix.length())))
                                    .reduce(success(unit()),
                                            (acc, next) -> acc.flatMap(_ -> next));
+    }
+
+    private static Result<Unit> refuseConsumerKeys(TomlDocument doc,
+                                                   String streamName,
+                                                   String section,
+                                                   String groupName) {
+        return refuseDashedConsumerKeys(doc, streamName, section, groupName).flatMap(_ -> refuseUnavailableOffsetReset(streamName,
+                                                                                                                       "consumers." + groupName
+                                                                                                                      + ".auto_offset_reset",
+                                                                                                                       doc.getString(section,
+                                                                                                                                     "auto_offset_reset")));
+    }
+
+    /// The T-147 gate: a per-group `auto_offset_reset` of `earliest` is accepted (it is what every group does today, so
+    /// nothing is stored), `latest` is refused with [StreamDeclarationError.NotYetAvailable] naming S1a, which lands the
+    /// behaviour, and anything else is a [StreamDeclarationError.MalformedValue]. S1a deletes this gate and its tripwire.
+    private static Result<Unit> refuseUnavailableOffsetReset(String alias, String key, Option<String> raw) {
+        return raw.map(value -> StreamValues.oneOf(alias,
+                                                   key,
+                                                   value,
+                                                   List.of("earliest", "latest"))
+                                            .flatMap(policy -> "latest".equals(policy)
+                                                               ? new StreamDeclarationError.NotYetAvailable(alias,
+                                                                                                            key,
+                                                                                                            "S1a").<Unit> result()
+                                                               : success(unit())))
+                  .or(success(unit()));
     }
 
     private static Result<Map<String, ConsumerConfig>> extractConsumerConfigs(TomlDocument doc, String streamName) {
@@ -1263,14 +1347,14 @@ public interface StreamConfigParser {
                                                                String streamName,
                                                                String section,
                                                                String groupName) {
-        return refuseDashedConsumerKeys(doc, streamName, section, groupName).flatMap(_ -> parseCheckpointInterval(doc,
-                                                                                                                  streamName,
-                                                                                                                  section,
-                                                                                                                  groupName))
-                                       .map(checkpointIntervalMs -> consumerConfig(doc,
-                                                                                   section,
-                                                                                   groupName,
-                                                                                   checkpointIntervalMs));
+        return refuseConsumerKeys(doc, streamName, section, groupName).flatMap(_ -> parseCheckpointInterval(doc,
+                                                                                                            streamName,
+                                                                                                            section,
+                                                                                                            groupName))
+                                 .map(checkpointIntervalMs -> consumerConfig(doc,
+                                                                             section,
+                                                                             groupName,
+                                                                             checkpointIntervalMs));
     }
 
     /// The consumer configuration a `[streams.<alias>.consumers.<group>]` section declares, read from the text of its keys
@@ -1296,22 +1380,23 @@ public interface StreamConfigParser {
                                                "one of: governor, nearest, any-replica, linearizable",
                                                StreamConfigParser::parseReadPreference,
                                                ReadPreference.GOVERNOR);
+        var config = Result.all(consumer.integer("batch_size").map(value -> value.or(1)),
+                                processing,
+                                onFailure,
+                                checkpointMs,
+                                consumer.integer("max_retries").map(value -> value.or(3)),
+                                readPreference)
+                           .map((batch, mode, strategy, interval, retries, preference) -> ConsumerConfig.consumerConfig(alias,
+                                                                                                                        batch,
+                                                                                                                        mode,
+                                                                                                                        strategy,
+                                                                                                                        interval,
+                                                                                                                        retries,
+                                                                                                                        consumer.string("dead_letter")
+                                                                                                                                .or(""),
+                                                                                                                        preference));
 
-        return Result.all(consumer.integer("batch_size").map(value -> value.or(1)),
-                          processing,
-                          onFailure,
-                          checkpointMs,
-                          consumer.integer("max_retries").map(value -> value.or(3)),
-                          readPreference)
-                     .map((batch, mode, strategy, interval, retries, preference) -> ConsumerConfig.consumerConfig(alias,
-                                                                                                                  batch,
-                                                                                                                  mode,
-                                                                                                                  strategy,
-                                                                                                                  interval,
-                                                                                                                  retries,
-                                                                                                                  consumer.string("dead_letter")
-                                                                                                                          .or(""),
-                                                                                                                  preference));
+        return refuseUnavailableOffsetReset(alias, "auto_offset_reset", consumer.string("auto_offset_reset")).flatMap(_ -> config);
     }
 
     private static <T> Result<T> parsedConsumerKey(StreamSection consumer,
