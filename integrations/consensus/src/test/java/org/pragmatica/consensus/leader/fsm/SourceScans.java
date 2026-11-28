@@ -23,6 +23,8 @@ import com.sun.source.tree.VariableTree;
 import com.sun.source.util.JavacTask;
 import com.sun.source.util.TreeScanner;
 
+import org.pragmatica.testlogging.SourceWalk;
+
 import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
@@ -37,7 +39,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.stream.Stream;
 
 /// #3846 source scans (memo r3 §2.4 as restated by ruling R1): every scan parses sources with the javac Tree API,
 /// keys each hit by its ENCLOSING METHOD (never by a line) and returns a sorted set the caller asserts EXACTLY.
@@ -49,9 +50,9 @@ import java.util.stream.Stream;
 /// - [#lifetimeEffects]: S3. `end()`, `schedule(..)`, `scheduleAtFixedRate(..)` whose receiver is not `SharedScheduler`.
 /// - [#hookDispatchers] and [#hookFollowUps]: S4a and S4b, over one file (the leader states).
 ///
-/// Self-contained on purpose (JDK only): `java SourceScans.java <leader main dir>` prints every scan for a quick look. The
-/// standing assertions are [LeaderSinkScanTest] and [LeaderOrderPathScanTest]; the greps are `scripts/inventory-3846.py`.
 /// - [#drainerExits]: R1's "not claimed" rows, the calls out of the drainer into code no scan can read.
+///
+/// The standing assertions are [LeaderSinkScanTest] and [LeaderOrderPathScanTest]; the greps are `scripts/inventory-3846.py`.
 final class SourceScans {
     /// The three sinks of the order, plus the two in-leader wrappers that reach `Fsm.dispatch` (#3846, lanes C/St/F
     /// delete them one by one; their entries leave the committed sets then).
@@ -74,13 +75,14 @@ final class SourceScans {
     record Body(String key, String simpleName, List<Call> calls) {}
 
     static Map<String, String> readDir(Path dir) throws IOException {
-        try (Stream<Path> files = Files.walk(dir)) {
-            var sources = new TreeMap<String, String>();
-            for (var file : files.filter(p -> p.toString().endsWith(".java")).toList()) {
+        var sources = new TreeMap<String, String>();
+
+        for (var file : SourceWalk.files(dir)) {
+            if (file.toString().endsWith(".java")) {
                 sources.put(dir.relativize(file).toString(), Files.readString(file));
             }
-            return sources;
         }
+        return sources;
     }
 
     /// S1. Key: `File:Enclosing > sink`, value: the number of hits in that method.
@@ -319,19 +321,5 @@ final class SourceScans {
         private static String receiverOf(ExpressionTree select) {
             return select instanceof MemberSelectTree member ? member.getExpression().toString() : "";
         }
-    }
-
-    /// `java SourceScans.java <dir>` prints every scan over `dir` (the leader main sources), one `scan<TAB>key<TAB>count`
-    /// line per hit.
-    public static void main(String[] args) throws IOException {
-        var sources = readDir(Path.of(args[0]));
-        var state = sources.entrySet().stream().filter(e -> e.getKey().endsWith("LeaderElectionState.java"))
-                           .map(Map.Entry::getValue).findFirst().orElse("");
-
-        sinkHits(sources).forEach((k, v) -> System.out.println("S1\t" + k + "\t" + v));
-        drainerExits(sources).forEach((k, v) -> System.out.println("X\t" + k + "\t" + v));
-        lifetimeEffects(sources).forEach((k, v) -> System.out.println("S3\t" + k + "\t" + v));
-        hookDispatchers(state).forEach(k -> System.out.println("S4a\t" + k + "\t1"));
-        hookFollowUps(state).forEach((k, v) -> System.out.println("S4b\t" + k + "\t" + v));
     }
 }
