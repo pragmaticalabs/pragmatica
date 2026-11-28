@@ -305,6 +305,48 @@ class StreamResourceValidatorTest {
                                                                .extracting(StreamValidationFailure::rule)
                                                                .containsOnly(StreamResourceValidator.RULE_INERT_STREAM_CONFIG));
         }
+
+        /// A declaration whose hot window exceeds the replay share (clamp) and whose `all` retention is sized by `max_count`.
+        private static final String WARNING_RAISING = """
+                [streams.orders]
+                version = "1.0.0"
+                partitions = 1
+                max_event_size = 1024
+                [streams.orders.hot]
+                max_bytes = "32MiB"
+                [streams.orders.retention]
+                max_bytes = "8MiB"
+                max_count = 20000
+                mode = "all"
+                """;
+
+        /// #3865 F2 pin, beside the tripwire above: the two call sites of `collectDeclarationWarnings` (`validate`, `partition`)
+        /// are unreachable at this head, because a warning needs a declared `[hot]`/`[retention]` and the inert gate refuses
+        /// both. Real assertion, @Disabled until #3333 S2a3 (wires `[retention]`) and S2b (wires `[hot]`) lift the gate; its
+        /// proof is a probe with the gate lifted (control green, the validate-site and partition-site mutants RED).
+        @Disabled("#3333 S2a3/S2b lift the inert gate for [retention]/[hot]: enable this and delete the tripwire above")
+        @Test
+        void aWarningDeclaration_validateCarriesBothDeclarationWarnings() {
+            var validated = StreamResourceValidator.validate(Option.some(WARNING_RAISING), APP_ARTIFACT).unwrap();
+
+            assertThat(validated.warnings()).extracting(StreamValidationWarning::rule)
+                                            .containsExactly("hot-window-clamped", "retention-all-count-sized-by-max-event");
+            assertThat(validated.warnings()).extracting(StreamValidationWarning::field).containsOnly("[streams.orders]");
+        }
+
+        @Disabled("#3333 S2a3/S2b lift the inert gate for [retention]/[hot]: enable this and delete the tripwire above")
+        @Test
+        void aWarningDeclaration_partitionCarriesBothDeclarationWarnings() {
+            var partition = StreamResourceValidator.partition(Option.some(WARNING_RAISING),
+                                                              APP_ARTIFACT,
+                                                              Map.of(),
+                                                              ReplicationContext.BUILT_IN)
+                                                   .unwrap();
+
+            assertThat(partition.accepted()).containsKey("orders");
+            assertThat(partition.warnings()).extracting(StreamValidationWarning::rule)
+                                            .containsExactly("hot-window-clamped", "retention-all-count-sized-by-max-event");
+        }
     }
 
     @Nested

@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.fail;
 /// gates of `truncation.policy = "until_consumed"` (S3) and `expected_ingress` (S5) sit in `parseStreamDeclaration`, which only the
 /// owned branch reaches, so an external stream accepted and ignored both (`expected_ingress` is a regression against the base,
 /// `until_consumed` was already accepted there). The per-group `auto_offset_reset = "latest"` (S1a) is read by the external branch
-/// but not by the resources parse of an OWNED alias, whose consumer tables are read by `parseConsumers`.
+/// but not by the resources parse of an OWNED alias, whose consumer tables are read by `parseConsumers` (refused downstream, pinned).
 ///
 /// Each slipping cell is an ENABLED tripwire asserting today's acceptance, with the real assertion `@Disabled` beside it. The fix
 /// flips them: enable the real assertion, delete the tripwire.
@@ -108,19 +108,17 @@ class StreamConfigParserEveryPathGateTest {
         externalUntilConsumed().forEach(toml -> assertRefusedOnEveryParseEntry(toml, "truncation.policy", "S3"));
     }
 
-    /// Tripwire (ENABLED, current behaviour): the resources parse of an OWNED alias never reads its consumer tables, so a
-    /// per-group `latest` is admitted by every parse entry point and refused later by `parseConsumers` and the deploy validator;
-    /// the external branch refuses it at parse. Whether the owned parse must refuse it too is open (#3865 lane report).
+    /// Refused downstream (#3865 ruling 2, not a slip): the resources parse of an OWNED alias never reads its consumer tables, so
+    /// every parse entry point admits a per-group `latest`; the refusal is `parseConsumers`, which the deploy validator runs for
+    /// every owned alias before admitting it (`NotYetAvailableEveryPathTripwireTest` pins that the stream is then not admitted).
+    /// The external branch reads its consumer tables at parse and refuses there.
     @Test
-    void ownedConsumerLatest_isAcceptedTodayOnEveryParseEntry_tripwire() {
-        assertAcceptedOnEveryParseEntry(OWNED + LATEST_GROUP,
-                                        "#3865 owned parse now reads consumer tables: delete this tripwire and enable ownedConsumerLatest_isRefusedNotYetAvailable_onEveryParseEntry");
-    }
+    void ownedConsumerLatest_isAdmittedByTheParse_andRefusedByParseConsumers() {
+        assertAcceptedOnEveryParseEntry(OWNED + LATEST_GROUP, "owned alias, consumer tables are read by parseConsumers");
 
-    @Disabled("#3865: only if the owned resources parse is ruled to read consumer tables; enable this, delete the tripwire above")
-    @Test
-    void ownedConsumerLatest_isRefusedNotYetAvailable_onEveryParseEntry() {
-        assertRefusedOnEveryParseEntry(OWNED + LATEST_GROUP, "auto_offset_reset", "S1a");
+        var refusal = StreamConfigParser.parseConsumers(OWNED + LATEST_GROUP, "orders").<Option<Cause>> fold(Option::some, _ -> Option.none());
+
+        assertThat(refusal.map(Cause::message).or("accepted")).contains("auto_offset_reset").contains("S1a");
     }
 
     /// Controls that keep the tripwires honest: the refusals that already hold, on the same entry points.
