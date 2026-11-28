@@ -1720,8 +1720,9 @@
 /// ```
 ///
 /// **TLA+ model of the directive receipt** (`DirectiveReceipt`, #3828): the model of section 7 of the redesign's memo, round 10.
-/// The skeleton and the configs are below; three action fragments sit on the methods that carry the behaviour:
-/// `Directory#directiveMutation` (Issue), `RetirementUnit#retirementUnit` (Retire) and `DepartureFlow#admittedRewrite` (Admit).
+/// The skeleton and the configs are below; four action fragments sit on the methods that carry the behaviour:
+/// `Directory#directiveMutation` (Issue), `RetirementUnit#retirementUnit` (Retire), `RetirementUnit#decide` (Decide) and
+/// `DepartureFlow#admittedRewrite` (Admit). A fragment is checked against the model, not against the code beside it.
 /// **The code at this commit is FACT = "none"** (config `base`, which fails): the retirement unit is code, and nothing writes a
 /// receipt yet, so the unit finds none and the issue is withheld by nothing. Every other FACT value and the issue's receipt
 /// describe code that does not exist yet (the redesign of #3828) or was rejected on the way to it; the lane that writes the
