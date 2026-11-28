@@ -58,7 +58,6 @@ class LeaderRunTimeRowsTest {
     private static final NodeId SELF = new NodeId("node-1");
     private static final NodeId PEER_A = new NodeId("node-2");
     private static final NodeId PEER_B = new NodeId("node-3");
-    private static final NodeId STRANGER = new NodeId("node-9");
     private static final List<NodeId> ALL = List.of(SELF, PEER_A, PEER_B);
     private static final TimeSpan LONG = TimeSpan.timeSpan(60).seconds();
     private static final TimeSpan SHORT = TimeSpan.timeSpan(50).millis();
@@ -344,8 +343,10 @@ class LeaderRunTimeRowsTest {
     // Group 4: the pins O09, K23b, K25, K26 and K27 (install-time wiring; asserted so a change is visible, never claimed).
     // ---------------------------------------------------------------------------------------------------------------
     /// O09 (P1, pin): the body of the transport-view supplier runs on the drainer, in the reassert task the removal arms,
-    /// and the view it returns is admitted as the node's stored view, even a node the node never saw. The reassert's own
-    /// dispatch is confined, so a task that ran off the drainer would leave the breach count at 1 and the view unchanged.
+    /// and the view it returns is admitted as the node's stored view: the removed `PEER_B` is back. (`currentTopology()`
+    /// keeps only the eligible nodes of the configured cluster, so a node outside it would be stored yet invisible: the
+    /// chosen view is `ALL`.) The reassert's own dispatch is confined, so a task that ran off the drainer would leave the
+    /// breach count at 1 and the view unchanged.
     @Test
     void o09_transportViewSupplierBody_runsOnTheDrainerAndItsViewIsAdmitted() {
         var h = ledUnderPeerA(MessageRouter.mutable());
@@ -353,7 +354,7 @@ class LeaderRunTimeRowsTest {
         try {
             var ctx = h.state().ctx();
             var ran = new AtomicBoolean(false);
-            var chosen = List.of(SELF, PEER_A, STRANGER);
+            var chosen = ALL;
 
             ctx.installTransportView(() -> chosenView(ran, chosen),
                                      TimeSpan.timeSpan(1).millis());
@@ -362,7 +363,7 @@ class LeaderRunTimeRowsTest {
             Awaitility.await("the reassert task ran the supplier and dispatched its view")
                       .atMost(POLL_WITHIN_SECONDS, TimeUnit.SECONDS)
                       .until(() -> ran.get() && ctx.currentTopology()
-                                                   .contains(STRANGER));
+                                                   .contains(PEER_B));
             assertThat(ctx.currentTopology()).as("O09: the caller-chosen view is the stored view")
                       .containsExactlyInAnyOrderElementsOf(chosen);
             assertThat(ctx.confinementBreachesForTest()).as("O09: the supplier's view was dispatched on the drainer, not refused")
